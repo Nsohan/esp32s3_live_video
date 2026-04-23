@@ -1,0 +1,4 @@
+# Ignore build folder and specific files within it
+build/
+build/*.log
+build/*.tmp
