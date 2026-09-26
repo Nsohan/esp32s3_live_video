@@ -6,8 +6,10 @@
 #include "wifi.h"
 #include "http_stream.h"
 #include "display.h"
+#include "roboeyes_display.h"
 
 static const char *TAG = "camera_test";
+
 
 // ─── PUT YOUR CREDENTIALS HERE ───────────────────────────
 #define WIFI_SSID "Anonymous"
@@ -104,10 +106,10 @@ static esp_err_t camera_init(void)
 
 void app_main(void)
 {
-    // 0. Init display & show solid color (e.g. solid BLUE or CYAN)
+    // 0. Init display
     ESP_LOGI(TAG, "Initializing 2.4\" TFT Display...");
     if (display_init() == ESP_OK) {
-        display_fill_screen(COLOR_BLUE);
+        display_fill_screen(COLOR_BLACK);
     } else {
         ESP_LOGE(TAG, "Display initialization failed!");
     }
@@ -155,5 +157,8 @@ void app_main(void)
     // 6. Start HTTP stream server
     start_camera_server();
 
-    ESP_LOGI(TAG, "Stream ready! Open browser at http://[IP shown above]");
-}
+    // 7. Start animated RoboEyes cycling every 15 seconds
+    roboeyes_start_cycling_task();
+
+    ESP_LOGI(TAG, "Stream & RoboEyes ready! Open browser at http://[IP shown above]");
+}

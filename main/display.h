@@ -36,7 +36,17 @@
 #define COLOR_WHITE     0xFFFF
 #define COLOR_ORANGE    0xFD20
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 esp_err_t display_init(void);
 void display_fill_screen(uint16_t color);
 void display_draw_test_pattern(void);
 void display_draw_petbot_face(void);
+void display_draw_framebuffer(const uint16_t *buffer);
+
+#ifdef __cplusplus
+}
+#endif
+

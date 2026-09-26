@@ -18,10 +18,20 @@ static const char *TAG = "display";
 
 static esp_lcd_panel_io_handle_t s_io_handle = NULL;
 static esp_lcd_panel_handle_t s_panel_handle = NULL;
-static uint16_t *s_dma_buffer = NULL;
+#define DISPLAY_CHUNK_LINES 40
+
+#define DISPLAY_CHUNK_PIXELS (LCD_H_RES * DISPLAY_CHUNK_LINES)
+#define DISPLAY_NUM_CHUNKS   (LCD_V_RES / DISPLAY_CHUNK_LINES)
+
+static SemaphoreHandle_t s_display_mutex = NULL;
+static uint16_t *s_chunk_buffers[DISPLAY_NUM_CHUNKS] = {NULL};
 
 esp_err_t display_init(void)
 {
+    if (!s_display_mutex) {
+        s_display_mutex = xSemaphoreCreateMutex();
+    }
+
     ESP_LOGI(TAG, "Initializing SPI bus for display...");
 
     spi_bus_config_t buscfg = {
@@ -30,7 +40,7 @@ esp_err_t display_init(void)
         .miso_io_num = -1,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = LCD_H_RES * 40 * sizeof(uint16_t),
+        .max_transfer_sz = DISPLAY_CHUNK_PIXELS * sizeof(uint16_t),
     };
     esp_err_t ret = spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK) {
@@ -42,7 +52,7 @@ esp_err_t display_init(void)
     esp_lcd_panel_io_spi_config_t io_config = {
         .dc_gpio_num = LCD_PIN_DC,
         .cs_gpio_num = LCD_PIN_CS,
-        .pclk_hz = 20 * 1000 * 1000, // 20 MHz for stable breadboard SPI
+        .pclk_hz = 20 * 1000 * 1000, // 20 MHz
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
         .spi_mode = 0,
@@ -62,10 +72,11 @@ esp_err_t display_init(void)
 
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = LCD_PIN_RST,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
         .vendor_config = (void *)&vendor_config,
     };
+
     ret = esp_lcd_new_panel_ili9341(s_io_handle, &panel_config, &s_panel_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create ILI9341 panel: %s", esp_err_to_name(ret));
@@ -79,39 +90,45 @@ esp_err_t display_init(void)
     // Set Landscape Mode (320 wide x 240 tall)
     esp_lcd_panel_swap_xy(s_panel_handle, true);
     esp_lcd_panel_mirror(s_panel_handle, false, false);
-    esp_lcd_panel_invert_color(s_panel_handle, false);
+    esp_lcd_panel_invert_color(s_panel_handle, true);
     esp_lcd_panel_disp_on_off(s_panel_handle, true);
+
+    // Allocate dedicated DMA buffers for all 6 chunks
+    for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
+        if (!s_chunk_buffers[i]) {
+            s_chunk_buffers[i] = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+            if (!s_chunk_buffers[i]) {
+                s_chunk_buffers[i] = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+            }
+        }
+    }
 
     ESP_LOGI(TAG, "Display initialized successfully (ILI9341 320x240 Landscape)!");
     return ESP_OK;
 }
 
+
 void display_fill_screen(uint16_t color)
 {
     if (!s_panel_handle) return;
+    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
 
-    const int chunk_lines = 20;
-    size_t chunk_pixels = LCD_H_RES * chunk_lines;
-    
-    if (!s_dma_buffer) {
-        s_dma_buffer = (uint16_t *)heap_caps_malloc(chunk_pixels * sizeof(uint16_t), MALLOC_CAP_DMA);
-        if (!s_dma_buffer) {
-            ESP_LOGE(TAG, "No memory for display DMA buffer");
-            return;
+    uint16_t be_color = SWAP_BYTES(color);
+
+    for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
+        if (s_chunk_buffers[i]) {
+            for (size_t p = 0; p < DISPLAY_CHUNK_PIXELS; p++) {
+                s_chunk_buffers[i][p] = be_color;
+            }
+            int y = i * DISPLAY_CHUNK_LINES;
+            esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + DISPLAY_CHUNK_LINES, s_chunk_buffers[i]);
         }
     }
 
-    uint16_t be_color = SWAP_BYTES(color);
-    for (size_t i = 0; i < chunk_pixels; i++) {
-        s_dma_buffer[i] = be_color;
-    }
-
-    for (int y = 0; y < LCD_V_RES; y += chunk_lines) {
-        int lines_to_draw = ((y + chunk_lines) <= LCD_V_RES) ? chunk_lines : (LCD_V_RES - y);
-        esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + lines_to_draw, s_dma_buffer);
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
+    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
+
+
 
 void display_draw_test_pattern(void)
 {
@@ -213,3 +230,23 @@ void display_draw_petbot_face(void)
 
     free(line_buf);
 }
+
+void display_draw_framebuffer(const uint16_t *buffer)
+{
+    if (!s_panel_handle || !buffer) return;
+    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
+
+    for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
+        if (s_chunk_buffers[i]) {
+            int y = i * DISPLAY_CHUNK_LINES;
+            int lines_to_draw = ((y + DISPLAY_CHUNK_LINES) <= LCD_V_RES) ? DISPLAY_CHUNK_LINES : (LCD_V_RES - y);
+            memcpy(s_chunk_buffers[i], buffer + (y * LCD_H_RES), LCD_H_RES * lines_to_draw * sizeof(uint16_t));
+            esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + lines_to_draw, s_chunk_buffers[i]);
+        }
+    }
+
+    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
+}
+
+
+
