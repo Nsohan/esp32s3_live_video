@@ -9,9 +9,6 @@ static const char *TAG = "http_stream";
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
-static const char *STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
-static const char *STREAM_PART =
-    "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 static volatile bool streaming_enabled = true;
 
@@ -19,92 +16,53 @@ static esp_err_t stream_handler(httpd_req_t *req)
 {
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
-    char part_buf[128];
+    char part_buf[160];
     int frame_count = 0;
-    int invalid_frames = 0;
 
     res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
     if (res != ESP_OK) return res;
 
-    // Set headers
+    // Set HTTP response headers
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Expires", "0");
     httpd_resp_set_hdr(req, "Connection", "keep-alive");
-    httpd_resp_set_hdr(req, "X-Framerate", "30");
 
-    ESP_LOGI(TAG, "Stream handler started");
+    ESP_LOGI(TAG, "Stream handler started for client");
 
     while (streaming_enabled) {
-        // Get frame
         fb = esp_camera_fb_get();
         if (!fb) {
-            ESP_LOGE(TAG, "Camera capture failed");
-            invalid_frames++;
-            if (invalid_frames > 10) {
-                ESP_LOGE(TAG, "Too many failed captures, stopping stream");
-                res = ESP_FAIL;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        // Validate JPEG data
-        bool valid_jpeg = (fb->len > 0 &&
-                          fb->buf[0] == 0xFF &&
-                          fb->buf[1] == 0xD8 &&
-                          fb->buf[fb->len-2] == 0xFF &&
-                          fb->buf[fb->len-1] == 0xD9);
-
-        if (!valid_jpeg) {
-            ESP_LOGW(TAG, "Invalid JPEG frame %d: size=%d", frame_count + 1, fb->len);
-            esp_camera_fb_return(fb);
-            invalid_frames++;
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        // Valid frame received
-        invalid_frames = 0;
-        frame_count++;
-
-        if (frame_count % 30 == 0) {
-            ESP_LOGI(TAG, "Streamed %d valid frames", frame_count);
-        }
-
-        // Send boundary
-        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
-        if (res != ESP_OK) {
-            ESP_LOGW(TAG, "Client disconnected (boundary send failed)");
-            esp_camera_fb_return(fb);
-            break;
-        }
-
-        // Send part header
-        size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, fb->len);
+        // Send boundary and part header in one packet for maximum network throughput
+        size_t hlen = snprintf(part_buf, sizeof(part_buf),
+                               "\r\n--" PART_BOUNDARY "\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
+                               (unsigned int)fb->len);
         res = httpd_resp_send_chunk(req, part_buf, hlen);
-        if (res != ESP_OK) {
-            ESP_LOGW(TAG, "Client disconnected (header send failed)");
-            esp_camera_fb_return(fb);
-            break;
+        if (res == ESP_OK) {
+            res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
         }
-
-        // Send JPEG data
-        res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
         esp_camera_fb_return(fb);
 
         if (res != ESP_OK) {
-            ESP_LOGW(TAG, "Client disconnected (data send failed)");
+            ESP_LOGW(TAG, "Client stream ended (code: %d)", res);
             break;
         }
 
-        // Small delay between frames to prevent flooding (30 fps)
-        vTaskDelay(pdMS_TO_TICKS(33));
+        frame_count++;
+        if (frame_count % 60 == 0) {
+            ESP_LOGI(TAG, "Streamed %d frames smoothly", frame_count);
+        }
+
+        // Minimal yield to keep socket and FreeRTOS tasks responsive
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    ESP_LOGI(TAG, "Stream handler stopped, sent %d valid frames", frame_count);
+    ESP_LOGI(TAG, "Stream handler closed. Total frames: %d", frame_count);
     return res;
 }
 
@@ -121,7 +79,6 @@ static esp_err_t control_handler(httpd_req_t *req)
 
     buf[ret] = '\0';
 
-    // Parse JSON
     if (strstr(buf, "\"action\":\"start\"")) {
         streaming_enabled = true;
         ESP_LOGI(TAG, "Streaming started by user");
@@ -172,221 +129,150 @@ static esp_err_t index_handler(httpd_req_t *req)
         "    <style>"
         "        * { margin: 0; padding: 0; box-sizing: border-box; }"
         "        body {"
-        "            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;"
-        "            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
+        "            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;"
+        "            background: #0f172a;"
+        "            color: #f8fafc;"
         "            min-height: 100vh;"
+        "            display: flex;"
+        "            flex-direction: column;"
+        "            align-items: center;"
         "            padding: 20px;"
         "        }"
         "        .container {"
-        "            max-width: 1200px;"
-        "            margin: 0 auto;"
-        "            background: white;"
-        "            border-radius: 20px;"
-        "            box-shadow: 0 20px 60px rgba(0,0,0,0.3);"
+        "            width: 100%;"
+        "            max-width: 680px;"
+        "            background: #1e293b;"
+        "            border: 1px solid #334155;"
+        "            border-radius: 16px;"
+        "            box-shadow: 0 20px 40px rgba(0,0,0,0.5);"
         "            overflow: hidden;"
         "        }"
         "        .header {"
-        "            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);"
-        "            color: white;"
-        "            padding: 30px;"
+        "            background: #0f172a;"
+        "            padding: 20px;"
         "            text-align: center;"
+        "            border-bottom: 1px solid #334155;"
         "        }"
-        "        .header h1 { font-size: 2em; margin-bottom: 10px; }"
-        "        .header p { opacity: 0.9; }"
+        "        .header h1 { font-size: 1.5em; color: #38bdf8; margin-bottom: 4px; }"
+        "        .header p { color: #94a3b8; font-size: 0.9em; }"
         "        .video-container {"
         "            background: #000;"
         "            position: relative;"
-        "            min-height: 480px;"
+        "            min-height: 320px;"
         "            display: flex;"
         "            align-items: center;"
         "            justify-content: center;"
         "        }"
         "        #stream {"
         "            width: 100%;"
-        "            max-height: 70vh;"
+        "            height: auto;"
+        "            max-height: 480px;"
         "            object-fit: contain;"
-        "            display: none;"
+        "            display: block;"
         "        }"
         "        #placeholder {"
-        "            color: white;"
+        "            display: none;"
+        "            color: #94a3b8;"
         "            text-align: center;"
         "            padding: 40px;"
         "        }"
         "        .controls {"
-        "            padding: 30px;"
-        "            background: #f8f9fa;"
+        "            padding: 20px;"
+        "            background: #1e293b;"
         "            display: flex;"
-        "            gap: 15px;"
+        "            gap: 12px;"
         "            justify-content: center;"
         "            flex-wrap: wrap;"
         "        }"
         "        button {"
-        "            padding: 12px 30px;"
-        "            font-size: 16px;"
-        "            font-weight: bold;"
+        "            padding: 10px 24px;"
+        "            font-size: 15px;"
+        "            font-weight: 600;"
         "            border: none;"
-        "            border-radius: 50px;"
+        "            border-radius: 8px;"
         "            cursor: pointer;"
-        "            transition: all 0.3s ease;"
-        "            box-shadow: 0 2px 5px rgba(0,0,0,0.2);"
+        "            transition: all 0.2s ease;"
         "        }"
-        "        button:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(0,0,0,0.3); }"
-        "        button:active { transform: translateY(0); }"
-        "        .btn-start { background: #28a745; color: white; }"
-        "        .btn-start:hover { background: #218838; }"
-        "        .btn-stop { background: #dc3545; color: white; }"
-        "        .btn-stop:hover { background: #c82333; }"
-        "        .btn-capture { background: #ffc107; color: #333; }"
-        "        .btn-capture:hover { background: #e0a800; }"
+        "        button:hover { transform: translateY(-1px); filter: brightness(1.1); }"
+        "        .btn-start { background: #22c55e; color: #052e16; }"
+        "        .btn-stop { background: #ef4444; color: #450a0a; }"
+        "        .btn-capture { background: #38bdf8; color: #082f49; }"
         "        .status {"
-        "            padding: 15px 30px;"
-        "            background: #e9ecef;"
-        "            text-align: center;"
-        "            font-weight: bold;"
+        "            padding: 12px 20px;"
+        "            background: #0f172a;"
         "            display: flex;"
         "            justify-content: space-between;"
         "            align-items: center;"
-        "            flex-wrap: wrap;"
-        "            gap: 10px;"
+        "            font-size: 14px;"
+        "            border-top: 1px solid #334155;"
         "        }"
         "        .status-badge {"
-        "            padding: 5px 15px;"
-        "            border-radius: 20px;"
-        "            font-size: 14px;"
+        "            padding: 4px 12px;"
+        "            border-radius: 12px;"
         "            font-weight: bold;"
         "        }"
-        "        .status-badge.stopped { background: #dc3545; color: white; }"
-        "        .status-badge.streaming { background: #28a745; color: white; }"
-        "        .info {"
-        "            padding: 20px;"
-        "            background: #f8f9fa;"
-        "            text-align: center;"
-        "            color: #666;"
-        "            font-size: 14px;"
-        "            border-top: 1px solid #dee2e6;"
-        "        }"
-        "        @media (max-width: 768px) {"
-        "            button { padding: 10px 20px; font-size: 14px; }"
-        "            .header h1 { font-size: 1.5em; }"
-        "        }"
+        "        .status-badge.streaming { background: #22c55e22; color: #4ade80; border: 1px solid #22c55e44; }"
+        "        .status-badge.stopped { background: #ef444422; color: #f87171; border: 1px solid #ef444444; }"
         "    </style>"
         "</head>"
         "<body>"
         "    <div class='container'>"
         "        <div class='header'>"
-        "            <h1>🤖 PetBot Camera Controller</h1>"
-        "            <p>ESP32-S3 with OV2640 Camera</p>"
+        "            <h1>🤖 PetBot Live Camera</h1>"
+        "            <p>ESP32-S3 OV2640 Real-Time Stream</p>"
         "        </div>"
         "        <div class='video-container'>"
-        "            <img id='stream' src='' alt='Camera Stream'>"
+        "            <img id='stream' src='/stream' alt='Live Video Feed'>"
         "            <div id='placeholder'>"
-        "                <h2>📷 Camera Ready</h2>"
-        "                <p>Click Start Streaming to begin</p>"
+        "                <h3>📷 Stream Paused</h3>"
         "            </div>"
         "        </div>"
         "        <div class='controls'>"
-        "            <button class='btn-start' onclick='startStream()'>▶ Start Streaming</button>"
-        "            <button class='btn-stop' onclick='stopStream()'>⏹ Stop Streaming</button>"
-        "            <button class='btn-capture' onclick='capture()'>📸 Capture Photo</button>"
+        "            <button class='btn-start' onclick='startStream()'>▶ Start Stream</button>"
+        "            <button class='btn-stop' onclick='stopStream()'>⏹ Stop Stream</button>"
+        "            <button class='btn-capture' onclick='capture()'>📸 Capture Snapshot</button>"
         "        </div>"
         "        <div class='status'>"
-        "            <span>📡 Stream Status:</span>"
-        "            <span id='status' class='status-badge stopped'>Stopped</span>"
-        "        </div>"
-        "        <div class='info'>"
-        "            <p>🔧 Tip: Use Start/Stop to control the video stream. Capture takes a single photo.</p>"
+        "            <span>Stream Status:</span>"
+        "            <span id='status' class='status-badge streaming'>Streaming 🟢</span>"
         "        </div>"
         "    </div>"
         "    <script>"
-        "        let streamActive = false;"
         "        let streamImg = document.getElementById('stream');"
         "        let placeholder = document.getElementById('placeholder');"
         "        let statusBadge = document.getElementById('status');"
         "        "
-        "        function updateUI(active) {"
-        "            streamActive = active;"
-        "            if (active) {"
-        "                streamImg.style.display = 'block';"
-        "                placeholder.style.display = 'none';"
-        "                statusBadge.className = 'status-badge streaming';"
-        "                statusBadge.innerHTML = 'Streaming 🟢';"
-        "            } else {"
-        "                streamImg.style.display = 'none';"
-        "                placeholder.style.display = 'block';"
-        "                streamImg.src = '';"
-        "                statusBadge.className = 'status-badge stopped';"
-        "                statusBadge.innerHTML = 'Stopped 🔴';"
-        "            }"
+        "        function startStream() {"
+        "            streamImg.src = '/stream?' + Date.now();"
+        "            streamImg.style.display = 'block';"
+        "            placeholder.style.display = 'none';"
+        "            statusBadge.className = 'status-badge streaming';"
+        "            statusBadge.innerHTML = 'Streaming 🟢';"
         "        }"
         "        "
-        "        async function startStream() {"
-        "            try {"
-        "                const response = await fetch('/control', {"
-        "                    method: 'POST',"
-        "                    headers: { 'Content-Type': 'application/json' },"
-        "                    body: JSON.stringify({ action: 'start' })"
-        "                });"
-        "                const data = await response.json();"
-        "                if (data.status === 'started') {"
-        "                    streamImg.src = '/stream?' + new Date().getTime();"
-        "                    updateUI(true);"
-        "                }"
-        "            } catch(e) {"
-        "                console.error('Start failed:', e);"
-        "                alert('Failed to start stream');"
-        "            }"
-        "        }"
-        "        "
-        "        async function stopStream() {"
-        "            try {"
-        "                const response = await fetch('/control', {"
-        "                    method: 'POST',"
-        "                    headers: { 'Content-Type': 'application/json' },"
-        "                    body: JSON.stringify({ action: 'stop' })"
-        "                });"
-        "                const data = await response.json();"
-        "                if (data.status === 'stopped') {"
-        "                    updateUI(false);"
-        "                }"
-        "            } catch(e) {"
-        "                console.error('Stop failed:', e);"
-        "                updateUI(false);"
-        "            }"
+        "        function stopStream() {"
+        "            streamImg.src = '';"
+        "            streamImg.style.display = 'none';"
+        "            placeholder.style.display = 'block';"
+        "            statusBadge.className = 'status-badge stopped';"
+        "            statusBadge.innerHTML = 'Stopped 🔴';"
         "        }"
         "        "
         "        async function capture() {"
         "            try {"
-        "                const response = await fetch('/capture');"
-        "                if (response.ok) {"
-        "                    const blob = await response.blob();"
-        "                    const url = URL.createObjectURL(blob);"
-        "                    const a = document.createElement('a');"
-        "                    a.href = url;"
-        "                    a.download = `petbot_capture_${Date.now()}.jpg`;"
-        "                    document.body.appendChild(a);"
-        "                    a.click();"
-        "                    document.body.removeChild(a);"
-        "                    URL.revokeObjectURL(url);"
-        "                    alert('Photo saved!');"
-        "                } else {"
-        "                    alert('Capture failed');"
-        "                }"
+        "                const a = document.createElement('a');"
+        "                a.href = '/capture?' + Date.now();"
+        "                a.download = `petbot_${Date.now()}.jpg`;"
+        "                document.body.appendChild(a);"
+        "                a.click();"
+        "                document.body.removeChild(a);"
         "            } catch(e) {"
-        "                console.error('Capture failed:', e);"
-        "                alert('Failed to capture photo');"
+        "                alert('Snapshot failed');"
         "            }"
         "        }"
         "        "
-        "        // Auto-reconnect on error"
         "        streamImg.onerror = function() {"
-        "            if (streamActive) {"
-        "                console.log('Stream error, reconnecting...');"
-        "                setTimeout(() => {"
-        "                    if (streamActive) {"
-        "                        streamImg.src = '/stream?' + new Date().getTime();"
-        "                    }"
-        "                }, 1000);"
-        "            }"
+        "            setTimeout(() => { if (streamImg.src) streamImg.src = '/stream?' + Date.now(); }, 1000);"
         "        };"
         "    </script>"
         "</body>"
@@ -402,9 +288,11 @@ void start_camera_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.stack_size = 8192;
+    config.stack_size = 10240;
     config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
+    config.send_wait_timeout = 10;
+    config.recv_wait_timeout = 10;
 
     httpd_handle_t server = NULL;
 

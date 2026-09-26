@@ -28,11 +28,11 @@ esp_err_t camera_driver_init(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_QVGA, // 320x240 exact match for 2.4" TFT LCD
-        .jpeg_quality = 12,           // Optimal balance for high FPS and crisp quality
-        .fb_count = 2,                // Double buffering for smooth live preview
+        .frame_size = FRAMESIZE_QVGA, // 320x240
+        .jpeg_quality = 12,           // Clean, sharp image with fast transmission
+        .fb_count = 2,                // Double buffering
         .fb_location = CAMERA_FB_IN_PSRAM,
-        .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+        .grab_mode = CAMERA_GRAB_LATEST, // Always grab freshest frame (eliminates lag!)
     };
 
     esp_err_t err = esp_camera_init(&config);
@@ -41,33 +41,31 @@ esp_err_t camera_driver_init(void)
         return err;
     }
 
-    // Apply OV2640-specific settings
+    // Apply auto-tuning for vibrant, bright image in any room lighting
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
         s->set_framesize(s, FRAMESIZE_QVGA);
         s->set_quality(s, 12);
-        s->set_brightness(s, 1);
-        s->set_contrast(s, 1);
-        s->set_saturation(s, 1);
-        s->set_special_effect(s, 0);
-        s->set_whitebal(s, 1);
-        s->set_awb_gain(s, 1);
-        s->set_wb_mode(s, 0);
-        s->set_exposure_ctrl(s, 1);
-        s->set_aec2(s, 1);
-        s->set_ae_level(s, 0);
-        s->set_aec_value(s, 300);
-        s->set_gain_ctrl(s, 1);
-        s->set_agc_gain(s, 0);
-        s->set_gainceiling(s, GAINCEILING_2X);
-        s->set_bpc(s, 0);
-        s->set_wpc(s, 1);
-        s->set_raw_gma(s, 1);
-        s->set_lenc(s, 1);
-        s->set_dcw(s, 1);
-        s->set_colorbar(s, 0);
+        s->set_brightness(s, 0);       // -2 to 2 (0 = normal)
+        s->set_contrast(s, 0);         // -2 to 2 (0 = normal)
+        s->set_saturation(s, 0);       // -2 to 2 (0 = normal)
+        s->set_special_effect(s, 0);   // No effect
+        s->set_whitebal(s, 1);         // AWB ON
+        s->set_awb_gain(s, 1);         // AWB Gain ON
+        s->set_wb_mode(s, 0);          // Auto WB mode
+        s->set_exposure_ctrl(s, 1);    // Auto Exposure ON (AEC)
+        s->set_aec2(s, 0);             // Normal AEC DSP
+        s->set_ae_level(s, 0);         // Auto exposure target level
+        s->set_gain_ctrl(s, 1);        // Auto Gain Control ON (AGC)
+        s->set_gainceiling(s, GAINCEILING_8X); // Allow gain to boost in darker environments
+        s->set_bpc(s, 1);              // Black pixel correction ON
+        s->set_wpc(s, 1);              // White pixel correction ON
+        s->set_raw_gma(s, 1);          // Gamma correction ON
+        s->set_lenc(s, 1);             // Lens correction ON
+        s->set_dcw(s, 1);              // Downsize correction ON
+        s->set_colorbar(s, 0);         // Test colorbar OFF
     }
 
-    ESP_LOGI(TAG, "Camera driver initialized successfully (320x240 QVGA)!");
+    ESP_LOGI(TAG, "Camera driver initialized: QVGA (320x240) with Auto-Exposure & Auto-Gain!");
     return ESP_OK;
 }
