@@ -22,10 +22,12 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGW(TAG, "WiFi disconnected, reason: %d", disconn ? disconn->reason : -1);
         if (s_retry_num < MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
-            ESP_LOGI(TAG, "Retrying WiFi connection...");
+            ESP_LOGI(TAG, "Retrying WiFi connection (%d/%d)...", s_retry_num, MAX_RETRY);
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
@@ -64,10 +66,14 @@ void wifi_init(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                          &event_handler, NULL, &instance_got_ip));
 
-    wifi_config_t wifi_config = {};
+    wifi_config_t wifi_config = {
+        .sta = {
+            .threshold.authmode = WIFI_AUTH_OPEN,
+            .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
+        },
+    };
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));

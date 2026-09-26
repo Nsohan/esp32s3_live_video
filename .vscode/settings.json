@@ -1,3 +1,21 @@
 {
-    "idf.currentSetup": "C:\\Users\\Sohan\\esp\\v5.1.6\\esp-idf"
+    "idf.espIdfPath": "C:\\esp\\v6.1\\esp-idf",
+    "idf.toolsPath": "C:\\Espressif\\tools",
+    "idf.pythonBinPath": "C:\\Espressif\\tools\\python\\v6.1\\venv\\Scripts\\python.exe",
+    "idf.port": "COM3",
+    "idf.flashType": "UART",
+    "terminal.integrated.profiles.windows": {
+        "ESP-IDF PowerShell": {
+            "source": "PowerShell",
+            "args": [
+                "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "C:\\Espressif\\tools\\Microsoft.v6.1.PowerShell_profile.ps1"
+            ],
+            "icon": "terminal-powershell"
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "ESP-IDF PowerShell"
 }

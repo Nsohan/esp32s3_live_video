@@ -5,11 +5,12 @@
 #include "esp_camera.h"
 #include "wifi.h"
 #include "http_stream.h"
+#include "display.h"
 
 static const char *TAG = "camera_test";
 
 // ─── PUT YOUR CREDENTIALS HERE ───────────────────────────
-#define WIFI_SSID "ANONYMOUS"
+#define WIFI_SSID "Anonymous"
 #define WIFI_PASSWORD "soh@nsoh@n"
 // ─────────────────────────────────────────────────────────
 
@@ -103,6 +104,14 @@ static esp_err_t camera_init(void)
 
 void app_main(void)
 {
+    // 0. Init display & show solid color (e.g. solid BLUE or CYAN)
+    ESP_LOGI(TAG, "Initializing 2.4\" TFT Display...");
+    if (display_init() == ESP_OK) {
+        display_fill_screen(COLOR_BLUE);
+    } else {
+        ESP_LOGE(TAG, "Display initialization failed!");
+    }
+
     // 1. Init camera
     ESP_ERROR_CHECK(camera_init());
 
