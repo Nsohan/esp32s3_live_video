@@ -46,6 +46,8 @@ void gfx_draw_string_centered(int x, int y, int w, const char *str, uint16_t col
 void gfx_draw_icon(int center_x, int center_y, IconType icon, uint16_t color);
 void gfx_draw_app_tile(int x, int y, int size, IconType icon, const char *label, uint16_t bg_color, bool selected);
 
+extern const uint8_t font8x16[95][16];
+
 #ifdef __cplusplus
 }
 #endif

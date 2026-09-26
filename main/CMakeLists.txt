@@ -46,4 +46,5 @@ idf_component_register(
         RoboEyes
         esp_system
         espressif__esp32-camera
+        espressif__esp_jpeg
 )

@@ -9,7 +9,7 @@
 
 // ─── Modern Clean Sans-Serif 8x16 Bitmapped Font (ASCII 32 ' ' to 126 '~') ──
 // 16 bytes per character, row-by-row (Bit 7 = Left, Bit 0 = Right)
-static const uint8_t font8x16[95][16] = {
+const uint8_t font8x16[95][16] = {
     // 32 ' '
     {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     // 33 '!'

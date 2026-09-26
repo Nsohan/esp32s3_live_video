@@ -30,7 +30,7 @@ dependencies:
       require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.3.1
   espressif/esp_lcd_ili9341:
@@ -53,7 +53,8 @@ dependencies:
     version: 6.1.0
 direct_dependencies:
 - espressif/esp32-camera
+- espressif/esp_jpeg
 - espressif/esp_lcd_ili9341
-manifest_hash: 3712bb50451b411b90f5fede3e6a167e2ae709f87906799cae06653a80f2b4bf
+manifest_hash: 20ee2b9adf31093027a026ed1905231a85e80f20e72d8b6cc23e15f380e3e676
 target: esp32s3
 version: 3.0.0

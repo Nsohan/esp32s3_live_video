@@ -28,9 +28,9 @@ esp_err_t camera_driver_init(void)
         .ledc_channel = LEDC_CHANNEL_0,
 
         .pixel_format = PIXFORMAT_JPEG,
-        .frame_size = FRAMESIZE_SVGA, // SVGA (800x600)
-        .jpeg_quality = 10,           // High quality JPEG
-        .fb_count = 1,
+        .frame_size = FRAMESIZE_QVGA, // 320x240 exact match for 2.4" TFT LCD
+        .jpeg_quality = 12,           // Optimal balance for high FPS and crisp quality
+        .fb_count = 2,                // Double buffering for smooth live preview
         .fb_location = CAMERA_FB_IN_PSRAM,
         .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
     };
@@ -44,8 +44,8 @@ esp_err_t camera_driver_init(void)
     // Apply OV2640-specific settings
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        s->set_framesize(s, FRAMESIZE_SVGA);
-        s->set_quality(s, 10);
+        s->set_framesize(s, FRAMESIZE_QVGA);
+        s->set_quality(s, 12);
         s->set_brightness(s, 1);
         s->set_contrast(s, 1);
         s->set_saturation(s, 1);
@@ -68,6 +68,6 @@ esp_err_t camera_driver_init(void)
         s->set_colorbar(s, 0);
     }
 
-    ESP_LOGI(TAG, "Camera driver initialized successfully!");
+    ESP_LOGI(TAG, "Camera driver initialized successfully (320x240 QVGA)!");
     return ESP_OK;
 }

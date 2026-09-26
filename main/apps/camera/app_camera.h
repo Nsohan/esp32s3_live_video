@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
 #include "app_common.h"
 
 #ifdef __cplusplus
@@ -7,17 +9,17 @@ extern "C" {
 #endif
 
 /**
- * @brief Render the Live Camera UI view
- * @param wifi_ip Current device IP for stream URL
+ * @brief Initialize the camera viewfinder subsystem and buffers
  */
-void app_camera_draw(const char *wifi_ip);
+void app_camera_init(void);
 
 /**
- * @brief Handle touch events in the Camera view
- * @param tx Touch X
- * @param ty Touch Y
- * @param next_state Output next AppState
- * @return true if event handled
+ * @brief Capture a live frame, decode to RGB565, render HUD, and push to LCD
+ */
+void app_camera_update(void);
+
+/**
+ * @brief Handle touch events in the Camera viewfinder
  */
 bool app_camera_handle_touch(int tx, int ty, AppState *next_state);
 

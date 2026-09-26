@@ -201,7 +201,7 @@ static void app_launcher_task(void *pvParameters)
                     draw_home_menu_screen();
                     break;
                 case STATE_CAMERA_VIEW:
-                    app_camera_draw(s_wifi_ip);
+                    // Continuously stream live frames in the viewfinder
                     break;
                 case STATE_SETTINGS_VIEW:
                     app_settings_draw();
@@ -226,12 +226,17 @@ static void app_launcher_task(void *pvParameters)
             }
         }
 
+        // Live camera viewfinder continuous update
+        if (s_current_state == STATE_CAMERA_VIEW) {
+            app_camera_update();
+        }
+
         // Poll Touch Screen
         int tx = -1, ty = -1;
         uint16_t rx = 0, ry = 0;
         if (touch_read_all(&tx, &ty, &rx, &ry)) {
             last_touch_activity = now;
-            if (!touch_held || s_current_state == STATE_CALIBRATE_VIEW) {
+            if (!touch_held || s_current_state == STATE_CALIBRATE_VIEW || s_current_state == STATE_CAMERA_VIEW) {
                 touch_held = true;
                 handle_touch_event(tx, ty, rx, ry);
             }
@@ -251,12 +256,17 @@ static void app_launcher_task(void *pvParameters)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(25));
+        if (s_current_state != STATE_CAMERA_VIEW) {
+            vTaskDelay(pdMS_TO_TICKS(25));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5)); // Minimal yield for high camera preview frame rate
+        }
     }
 }
 
 void app_launcher_init(void)
 {
+    app_camera_init();
     ESP_LOGI(TAG, "App Launcher initialized");
 }
 
