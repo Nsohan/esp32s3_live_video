@@ -17,5 +17,6 @@
             "icon": "terminal-powershell"
         }
     },
-    "terminal.integrated.defaultProfile.windows": "ESP-IDF PowerShell"
+    "terminal.integrated.defaultProfile.windows": "ESP-IDF PowerShell",
+    "idf.currentSetup": "C:\\esp\\v6.1\\esp-idf"
 }

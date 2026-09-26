@@ -7,14 +7,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include <string.h>
+#include <stdio.h>
+#include "app_launcher.h"
+#include "http_stream.h"
 
 static const char *TAG = "wifi";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
-#define MAX_RETRY          5
+#define MAX_RETRY          10
 
 static int s_retry_num = 0;
+static char s_current_ip[32] = "Connecting...";
+static char s_saved_ssid[32] = "";
+static bool s_server_started = false;
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                            int32_t event_id, void *event_data)
@@ -24,6 +30,9 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGW(TAG, "WiFi disconnected, reason: %d", disconn ? disconn->reason : -1);
+        snprintf(s_current_ip, sizeof(s_current_ip), "Disconnected");
+        app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
+        
         if (s_retry_num < MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
@@ -33,14 +42,31 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        snprintf(s_current_ip, sizeof(s_current_ip), IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "✓ WiFi Connected! IP: %s", s_current_ip);
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        // Update App Launcher status bar live
+        app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
+
+        // Start HTTP stream server once IP is obtained
+        if (!s_server_started) {
+            start_camera_server();
+            s_server_started = true;
+        }
     }
+}
+
+const char* wifi_get_ip_string(void)
+{
+    return s_current_ip;
 }
 
 void wifi_init(const char *ssid, const char *password)
 {
+    strncpy(s_saved_ssid, ssid, sizeof(s_saved_ssid) - 1);
+
     // Init NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -68,7 +94,7 @@ void wifi_init(const char *ssid, const char *password)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .threshold.authmode = WIFI_AUTH_OPEN,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
             .sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
         },
     };
@@ -79,15 +105,5 @@ void wifi_init(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Connecting to WiFi: %s", ssid);
-
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdFALSE, pdFALSE, portMAX_DELAY);
-
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected!");
-    } else {
-        ESP_LOGE(TAG, "WiFi connection FAILED");
-    }
+    ESP_LOGI(TAG, "Connecting to WiFi in background: %s", ssid);
 }

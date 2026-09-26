@@ -9,6 +9,7 @@
 
 #define LCD_PIN_SCK     40
 #define LCD_PIN_MOSI    41
+#define LCD_PIN_MISO    39
 #define LCD_PIN_CS      42
 #define LCD_PIN_DC      2
 #define LCD_PIN_RST     1
@@ -45,6 +46,8 @@ void display_fill_screen(uint16_t color);
 void display_draw_test_pattern(void);
 void display_draw_petbot_face(void);
 void display_draw_framebuffer(const uint16_t *buffer);
+void display_draw_color_block(int x, int y, int w, int h, uint16_t color);
+void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffer);
 
 #ifdef __cplusplus
 }

@@ -37,7 +37,7 @@ esp_err_t display_init(void)
     spi_bus_config_t buscfg = {
         .sclk_io_num = LCD_PIN_SCK,
         .mosi_io_num = LCD_PIN_MOSI,
-        .miso_io_num = -1,
+        .miso_io_num = LCD_PIN_MISO,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = DISPLAY_CHUNK_PIXELS * sizeof(uint16_t),
@@ -248,5 +248,40 @@ void display_draw_framebuffer(const uint16_t *buffer)
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
 
+void display_draw_color_block(int x, int y, int w, int h, uint16_t color)
+{
+    if (!s_panel_handle || w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > LCD_H_RES) w = LCD_H_RES - x;
+    if (y + h > LCD_V_RES) h = LCD_V_RES - y;
+    if (w <= 0 || h <= 0) return;
 
+    size_t pixels = w * h;
+    uint16_t *buf = (uint16_t *)heap_caps_malloc(pixels * sizeof(uint16_t), MALLOC_CAP_DMA);
+    if (!buf) {
+        buf = (uint16_t *)malloc(pixels * sizeof(uint16_t));
+    }
+    if (!buf) return;
 
+    uint16_t be_color = SWAP_BYTES(color);
+    for (size_t i = 0; i < pixels; i++) {
+        buf[i] = be_color;
+    }
+
+    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
+    esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buf);
+    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
+
+    free(buf);
+}
+
+void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffer)
+{
+    if (!s_panel_handle || !buffer || w <= 0 || h <= 0) return;
+    if (x < 0 || y < 0 || (x + w) > LCD_H_RES || (y + h) > LCD_V_RES) return;
+
+    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
+    esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buffer);
+    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
+}

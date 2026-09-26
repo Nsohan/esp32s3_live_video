@@ -307,6 +307,10 @@ static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes) {
     }
 }
 
+static volatile bool s_roboeyes_active = false; // Starts paused so App Menu shows first
+static volatile uint16_t s_eye_color_be = SWAP_BYTES(COLOR_CYAN);
+static volatile int s_requested_mood = -1;
+
 // ─── FreeRTOS Background Eye Animation Task ───────────────
 static void roboeyes_task(void *pvParameters) {
     ESP_LOGI(TAG, "Starting RoboEyes Animation Engine (320x240)...");
@@ -333,7 +337,21 @@ static void roboeyes_task(void *pvParameters) {
     const uint32_t MODE_INTERVAL_MS = 15000; // 15 seconds per eye mode
 
     while (1) {
+        if (!s_roboeyes_active) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
         uint32_t now = millis();
+
+        display->main_color_be = s_eye_color_be;
+
+        if (s_requested_mood >= 0 && s_requested_mood < MODE_MAX_COUNT) {
+            current_mode = (EyeMode)s_requested_mood;
+            s_requested_mood = -1;
+            last_mode_switch_ms = now;
+            apply_mode(current_mode, eyes);
+        }
 
         // ─── Check 15-Second Mode Cycle ───────────────────
         if (now - last_mode_switch_ms >= MODE_INTERVAL_MS) {
@@ -347,7 +365,6 @@ static void roboeyes_task(void *pvParameters) {
         // ─── In-Mode Periodic Sub-Actions ─────────────────
         switch (current_mode) {
             case MODE_LAUGHING:
-                // Retrigger laugh animation every 1.8 seconds
                 if (now - last_sub_action_ms >= 1800) {
                     eyes.anim_laugh();
                     last_sub_action_ms = now;
@@ -355,7 +372,6 @@ static void roboeyes_task(void *pvParameters) {
                 break;
 
             case MODE_CONFUSED:
-                // Retrigger confused animation every 1.5 seconds
                 if (now - last_sub_action_ms >= 1500) {
                     eyes.anim_confused();
                     last_sub_action_ms = now;
@@ -363,7 +379,6 @@ static void roboeyes_task(void *pvParameters) {
                 break;
 
             case MODE_CURIOUS_LOOK:
-                // Step through positions every 1.5 seconds
                 if (now - last_sub_action_ms >= 1500) {
                     static const unsigned char positions[] = {N, NE, E, SE, S, SW, W, NW, DEFAULT};
                     sub_step = (sub_step + 1) % (sizeof(positions) / sizeof(positions[0]));
@@ -373,12 +388,11 @@ static void roboeyes_task(void *pvParameters) {
                 break;
 
             case MODE_WINKING:
-                // Alternate left and right wink every 1.8 seconds
                 if (now - last_sub_action_ms >= 1800) {
                     if (sub_step % 2 == 0) {
-                        eyes.blink(true, false);  // Blink left eye
+                        eyes.blink(true, false);
                     } else {
-                        eyes.blink(false, true);  // Blink right eye
+                        eyes.blink(false, true);
                     }
                     sub_step++;
                     last_sub_action_ms = now;
@@ -398,7 +412,6 @@ static void roboeyes_task(void *pvParameters) {
 }
 
 extern "C" void roboeyes_start_cycling_task(void) {
-    // Run on Core 1 with 8KB stack so Core 0 handles WiFi & Camera without disruption
     xTaskCreatePinnedToCore(
         roboeyes_task,
         "roboeyes_task",
@@ -408,6 +421,23 @@ extern "C" void roboeyes_start_cycling_task(void) {
         NULL,
         1
     );
-    ESP_LOGI(TAG, "RoboEyes 15-second eye cycling task started on Core 1!");
+    ESP_LOGI(TAG, "RoboEyes background engine ready on Core 1!");
+}
+
+extern "C" void roboeyes_set_active(bool active) {
+    s_roboeyes_active = active;
+}
+
+extern "C" bool roboeyes_is_active(void) {
+    return s_roboeyes_active;
+}
+
+extern "C" void roboeyes_set_color(uint16_t color_rgb565) {
+    s_eye_color_be = SWAP_BYTES(color_rgb565);
+}
+
+extern "C" void roboeyes_trigger_mood(int mood_index) {
+    s_requested_mood = mood_index;
+    s_roboeyes_active = true;
 }
 
