@@ -2,22 +2,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "app_common.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum {
-    STATE_APP_MENU,
-    STATE_CAMERA_VIEW,
-    STATE_ROBOEYES_VIEW,
-    STATE_SETTINGS_VIEW,
-    STATE_SYSINFO_VIEW,
-    STATE_PET_MOODS_VIEW,
-    STATE_WEB_STREAM_VIEW,
-    STATE_TORCH_VIEW,
-    STATE_CALIBRATE_VIEW
-} AppState;
 
 /**
  * @brief Initialize touch controller and app launcher subsystem
@@ -30,9 +19,19 @@ void app_launcher_init(void);
 void app_launcher_start_task(void);
 
 /**
- * @brief Update WiFi SSID and IP address shown in status bar & web view
+ * @brief Update WiFi SSID and IP address shown in status bar & app views
  */
 void app_launcher_set_wifi_info(const char *ssid, const char *ip);
+
+/**
+ * @brief Get current application state
+ */
+AppState app_launcher_get_current_state(void);
+
+/**
+ * @brief Programmatically switch application state
+ */
+void app_launcher_switch_state(AppState new_state);
 
 #ifdef __cplusplus
 }

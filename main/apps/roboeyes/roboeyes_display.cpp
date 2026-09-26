@@ -140,7 +140,6 @@ public:
         if (!framebuffer) return;
         uint16_t c_be = (color == 0) ? bg_color_be : main_color_be;
 
-        // Sort vertices ascending by Y: y0 <= y1 <= y2
         if (y0 > y1) { std::swap(y0, y1); std::swap(x0, x1); }
         if (y1 > y2) { std::swap(y1, y2); std::swap(x1, x2); }
         if (y0 > y1) { std::swap(y0, y1); std::swap(x0, x1); }
@@ -178,8 +177,6 @@ public:
         }
     }
 };
-
-
 
 // ─── Eye Mode Cycle State Machine ─────────────────────────
 enum EyeMode {
@@ -295,7 +292,6 @@ static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes) {
             eyes.setIdleMode(true, 2, 2);
             break;
 
-
         case MODE_WINKING:
             eyes.setMood(HAPPY);
             eyes.setIdleMode(false);
@@ -307,7 +303,7 @@ static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes) {
     }
 }
 
-static volatile bool s_roboeyes_active = false; // Starts paused so App Menu shows first
+static volatile bool s_roboeyes_active = false;
 static volatile uint16_t s_eye_color_be = SWAP_BYTES(COLOR_CYAN);
 static volatile int s_requested_mood = -1;
 
@@ -440,4 +436,3 @@ extern "C" void roboeyes_trigger_mood(int mood_index) {
     s_requested_mood = mood_index;
     s_roboeyes_active = true;
 }
-

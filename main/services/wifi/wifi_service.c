@@ -1,4 +1,4 @@
-#include "wifi.h"
+#include "wifi_service.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -11,7 +11,7 @@
 #include "app_launcher.h"
 #include "http_stream.h"
 
-static const char *TAG = "wifi";
+static const char *TAG = "wifi_service";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -32,7 +32,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGW(TAG, "WiFi disconnected, reason: %d", disconn ? disconn->reason : -1);
         snprintf(s_current_ip, sizeof(s_current_ip), "Disconnected");
         app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
-        
+
         if (s_retry_num < MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
@@ -58,12 +58,12 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-const char* wifi_get_ip_string(void)
+const char* wifi_service_get_ip_string(void)
 {
     return s_current_ip;
 }
 
-void wifi_init(const char *ssid, const char *password)
+void wifi_service_init(const char *ssid, const char *password)
 {
     strncpy(s_saved_ssid, ssid, sizeof(s_saved_ssid) - 1);
 

@@ -52,4 +52,3 @@ void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffe
 #ifdef __cplusplus
 }
 #endif
-

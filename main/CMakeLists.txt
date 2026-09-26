@@ -1,5 +1,49 @@
 idf_component_register(
-    SRCS "main.c" "wifi.c" "http_stream.c" "display.c" "display_gfx.c" "touch_xpt2046.c" "app_launcher.c" "roboeyes_display.cpp"
-    INCLUDE_DIRS "."
-    REQUIRES esp_wifi nvs_flash esp_netif esp_http_server esp_timer esp_lcd esp_lcd_ili9341 driver RoboEyes esp_system
+    SRCS
+        "main.c"
+        "core/app_common.c"
+        "core/app_launcher.c"
+        "drivers/camera/camera_driver.c"
+        "drivers/display/display.c"
+        "drivers/touch/touch_xpt2046.c"
+        "drivers/gfx/display_gfx.c"
+        "services/wifi/wifi_service.c"
+        "services/web_stream/http_stream.c"
+        "apps/camera/app_camera.c"
+        "apps/roboeyes/roboeyes_display.cpp"
+        "apps/settings/app_settings.c"
+        "apps/sysinfo/app_sysinfo.c"
+        "apps/moods/app_moods.c"
+        "apps/webstream/app_webstream.c"
+        "apps/torch/app_torch.c"
+        "apps/touch_test/app_touch_test.c"
+    INCLUDE_DIRS
+        "."
+        "core"
+        "drivers/camera"
+        "drivers/display"
+        "drivers/touch"
+        "drivers/gfx"
+        "services/wifi"
+        "services/web_stream"
+        "apps/camera"
+        "apps/roboeyes"
+        "apps/settings"
+        "apps/sysinfo"
+        "apps/moods"
+        "apps/webstream"
+        "apps/torch"
+        "apps/touch_test"
+    REQUIRES
+        esp_wifi
+        nvs_flash
+        esp_netif
+        esp_http_server
+        esp_timer
+        esp_lcd
+        esp_lcd_ili9341
+        driver
+        RoboEyes
+        esp_system
+        espressif__esp32-camera
 )

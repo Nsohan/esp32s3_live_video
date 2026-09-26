@@ -125,7 +125,6 @@ esp_err_t display_init(void)
     return ESP_OK;
 }
 
-
 void display_fill_screen(uint16_t color)
 {
     if (!s_panel_handle) return;
@@ -148,8 +147,6 @@ void display_fill_screen(uint16_t color)
 
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
-
-
 
 void display_draw_test_pattern(void)
 {

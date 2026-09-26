@@ -2,6 +2,7 @@
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "esp_log.h"
+#include <string.h>
 
 static const char *TAG = "http_stream";
 
@@ -441,7 +442,6 @@ void start_camera_server(void)
         httpd_register_uri_handler(server, &capture_uri);
 
         ESP_LOGI(TAG, "Camera stream server started on port 80");
-        ESP_LOGI(TAG, "Open http://192.168.1.11/ in your browser");
     } else {
         ESP_LOGE(TAG, "Failed to start HTTP server");
     }

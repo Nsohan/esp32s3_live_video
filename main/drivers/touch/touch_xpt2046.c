@@ -151,7 +151,6 @@ bool touch_read(int *out_x, int *out_y)
 
     // Apply orientation transforms for 320x240 Landscape
 #if TOUCH_SWAP_XY
-    // Sensor X moves with Display Y, Sensor Y moves with Display X
     px = ((int)ry - TOUCH_RAW_Y_MIN) * 320 / (TOUCH_RAW_Y_MAX - TOUCH_RAW_Y_MIN);
     py = ((int)rx - TOUCH_RAW_X_MIN) * 240 / (TOUCH_RAW_X_MAX - TOUCH_RAW_X_MIN);
 #else
@@ -173,7 +172,6 @@ bool touch_read(int *out_x, int *out_y)
     if (py < 0) py = 0;
     if (py > 239) py = 239;
 
-    // Log coordinates for calibration validation
     ESP_LOGI(TAG, "TOUCH: Raw[X=%u, Y=%u] => Screen[X=%d, Y=%d]", rx, ry, px, py);
 
     if (out_x) *out_x = px;
