@@ -37,18 +37,28 @@ typedef struct {
 } AppMenuItem;
 
 static const AppMenuItem MENU_ITEMS[] = {
-    {0, 0, ICON_GALLERY, "Touch Test", COLOR_CYAN_ACCENT, STATE_CALIBRATE_VIEW}
+    {0, 0, ICON_CAMERA,     "Camera",     COLOR_MAGENTA,     STATE_CAMERA_VIEW},
+    {1, 0, ICON_ROBOEYES,   "RoboEyes",   COLOR_CYAN,        STATE_ROBOEYES_VIEW},
+    {2, 0, ICON_SETTINGS,   "Settings",   0x7BEF,            STATE_SETTINGS_VIEW},
+    {3, 0, ICON_SYSINFO,    "Sys Info",   COLOR_YELLOW,      STATE_SYSINFO_VIEW},
+    {0, 1, ICON_PET_MOODS,  "Moods",      COLOR_GREEN,       STATE_PET_MOODS_VIEW},
+    {1, 1, ICON_WEB_STREAM, "WebStream",  COLOR_CYAN_ACCENT, STATE_WEB_STREAM_VIEW},
+    {2, 1, ICON_TORCH,      "Torch",      0xFD20,            STATE_TORCH_VIEW},
+    {3, 1, ICON_GALLERY,    "Touch Test", COLOR_CYAN_ACCENT, STATE_CALIBRATE_VIEW}
 };
 
 #define MENU_ITEM_COUNT (sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]))
 
-#define TILE_SIZE 64
+#define TILE_SIZE 52
+#define GRID_START_X 16
+#define GRID_START_Y 38
+#define GRID_GAP_X 24
+#define GRID_GAP_Y 22
 
 static void get_tile_rect(int col, int row, int *x, int *y, int *w, int *h)
 {
-    // Center single Touch Test tile on screen
-    *x = (320 - TILE_SIZE) / 2;
-    *y = (240 - TILE_SIZE) / 2 - 10;
+    *x = GRID_START_X + col * (TILE_SIZE + GRID_GAP_X);
+    *y = GRID_START_Y + row * (TILE_SIZE + GRID_GAP_Y + 16);
     *w = TILE_SIZE;
     *h = TILE_SIZE;
 }
@@ -82,12 +92,12 @@ static void draw_menu_screen(void)
 
     gfx_fill_rect(0, 22, 320, 1, 0x2124);
 
-    // Single Touch Test Tile Centered
-    int tx, ty, tw, th;
-    get_tile_rect(0, 0, &tx, &ty, &tw, &th);
-    gfx_draw_app_tile(tx, ty, tw, MENU_ITEMS[0].icon, MENU_ITEMS[0].name, MENU_ITEMS[0].color, false);
-
-    gfx_draw_string_centered(20, ty + th + 28, 280, "Tap icon to open 12-Block Calibration Grid", COLOR_TEXT_DIM, 0x0000, 1);
+    // Draw all 8 App Tiles
+    for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
+        int tx, ty, tw, th;
+        get_tile_rect(MENU_ITEMS[i].col, MENU_ITEMS[i].row, &tx, &ty, &tw, &th);
+        gfx_draw_app_tile(tx, ty, tw, MENU_ITEMS[i].icon, MENU_ITEMS[i].name, MENU_ITEMS[i].color, false);
+    }
 }
 
 // ─── 2. Camera View ───────────────────────────────────────
