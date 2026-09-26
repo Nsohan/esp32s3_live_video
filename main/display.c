@@ -24,12 +24,25 @@ static esp_lcd_panel_handle_t s_panel_handle = NULL;
 #define DISPLAY_NUM_CHUNKS   (LCD_V_RES / DISPLAY_CHUNK_LINES)
 
 static SemaphoreHandle_t s_display_mutex = NULL;
+static SemaphoreHandle_t s_trans_done_sem = NULL;
 static uint16_t *s_chunk_buffers[DISPLAY_NUM_CHUNKS] = {NULL};
+
+static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
+{
+    BaseType_t high_task_awoken = pdFALSE;
+    if (s_trans_done_sem) {
+        xSemaphoreGiveFromISR(s_trans_done_sem, &high_task_awoken);
+    }
+    return high_task_awoken == pdTRUE;
+}
 
 esp_err_t display_init(void)
 {
     if (!s_display_mutex) {
         s_display_mutex = xSemaphoreCreateMutex();
+    }
+    if (!s_trans_done_sem) {
+        s_trans_done_sem = xSemaphoreCreateBinary();
     }
 
     ESP_LOGI(TAG, "Initializing SPI bus for display...");
@@ -63,6 +76,11 @@ esp_err_t display_init(void)
         ESP_LOGE(TAG, "Failed to create panel IO: %s", esp_err_to_name(ret));
         return ret;
     }
+
+    const esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = on_color_trans_done,
+    };
+    esp_lcd_panel_io_register_event_callbacks(s_io_handle, &cbs, NULL);
 
     ESP_LOGI(TAG, "Creating LCD panel driver (ILI9341_2_DRIVER)...");
     static const ili9341_vendor_config_t vendor_config = {
@@ -122,6 +140,9 @@ void display_fill_screen(uint16_t color)
             }
             int y = i * DISPLAY_CHUNK_LINES;
             esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + DISPLAY_CHUNK_LINES, s_chunk_buffers[i]);
+            if (s_trans_done_sem) {
+                xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+            }
         }
     }
 
@@ -242,6 +263,9 @@ void display_draw_framebuffer(const uint16_t *buffer)
             int lines_to_draw = ((y + DISPLAY_CHUNK_LINES) <= LCD_V_RES) ? DISPLAY_CHUNK_LINES : (LCD_V_RES - y);
             memcpy(s_chunk_buffers[i], buffer + (y * LCD_H_RES), LCD_H_RES * lines_to_draw * sizeof(uint16_t));
             esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + lines_to_draw, s_chunk_buffers[i]);
+            if (s_trans_done_sem) {
+                xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+            }
         }
     }
 
@@ -271,6 +295,9 @@ void display_draw_color_block(int x, int y, int w, int h, uint16_t color)
 
     if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
     esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buf);
+    if (s_trans_done_sem) {
+        xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+    }
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 
     free(buf);
@@ -283,5 +310,8 @@ void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffe
 
     if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
     esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buffer);
+    if (s_trans_done_sem) {
+        xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+    }
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
