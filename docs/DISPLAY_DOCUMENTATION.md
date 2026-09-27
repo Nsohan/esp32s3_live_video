@@ -31,7 +31,13 @@ Comprehensive reference documentation for the **ILI9341 2.4" / 2.8" SPI TFT LCD 
 | **SDI / MOSI** | SPI Data In | `GPIO 41` | Master-Out Slave-In (`LCD_PIN_MOSI`) |
 | **SCK / SCL** | SPI Clock | `GPIO 40` | Serial Clock (`LCD_PIN_SCK`) |
 | **LED / BL** | Backlight | `3.3V` or `NC` | Connect to 3.3V for full brightness (`LCD_PIN_BCKL = -1`) |
-| **SDO / MISO** | SPI Data Out | `NC` / `-1` | Not used (display is write-only) |
+| **SDO / MISO** | SPI Data Out | `GPIO 39` | Shared with Touch `T_DO` & SD `SD_MISO` |
+| **T_CS** | Touch Chip Select | `GPIO 38` | Touch controller (`TOUCH_PIN_CS`) |
+| **T_IRQ** | Touch Interrupt | `GPIO 3` | Pen down interrupt (`TOUCH_PIN_IRQ`) |
+| **SD_CS** | SD Card Chip Select | `GPIO 14` | MicroSD Card slot CS on display PCB |
+| **SD_MOSI** | SD Card Data In | `GPIO 41` | Shared with Display `MOSI` |
+| **SD_MISO** | SD Card Data Out | `GPIO 39` | Shared with Touch `MISO` |
+| **SD_SCK** | SD Card Clock | `GPIO 40` | Shared with Display `SCK` |
 
 ---
 

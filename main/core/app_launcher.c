@@ -23,6 +23,8 @@
 #include "app_webstream.h"
 #include "app_torch.h"
 #include "app_touch_test.h"
+#include "app_music.h"
+#include "audio_player.h"
 
 static const char *TAG = "app_launcher";
 
@@ -42,14 +44,14 @@ typedef struct {
 } AppMenuItem;
 
 static const AppMenuItem MENU_ITEMS[] = {
-    {0, 0, ICON_CAMERA,     "Camera",     COLOR_MAGENTA,     STATE_CAMERA_VIEW},
-    {1, 0, ICON_ROBOEYES,   "RoboEyes",   COLOR_CYAN,        STATE_ROBOEYES_VIEW},
-    {2, 0, ICON_SETTINGS,   "Settings",   0x7BEF,            STATE_SETTINGS_VIEW},
-    {3, 0, ICON_SYSINFO,    "Sys Info",   COLOR_YELLOW,      STATE_SYSINFO_VIEW},
-    {0, 1, ICON_PET_MOODS,  "Moods",      COLOR_GREEN,       STATE_PET_MOODS_VIEW},
-    {1, 1, ICON_WEB_STREAM, "WebStream",  COLOR_CYAN_ACCENT, STATE_WEB_STREAM_VIEW},
-    {2, 1, ICON_TORCH,      "Torch",      0xFD20,            STATE_TORCH_VIEW},
-    {3, 1, ICON_GALLERY,    "Touch Test", COLOR_CYAN_ACCENT, STATE_CALIBRATE_VIEW}
+    {0, 0, ICON_CAMERA,     "Camera",     COLOR_MAGENTA,       STATE_CAMERA_VIEW},
+    {1, 0, ICON_ROBOEYES,   "RoboEyes",   COLOR_CYAN,          STATE_ROBOEYES_VIEW},
+    {2, 0, ICON_MUSIC,      "Music",      COLOR_ORANGE_ACCENT, STATE_MUSIC_VIEW},
+    {3, 0, ICON_SETTINGS,   "Settings",   0x7BEF,              STATE_SETTINGS_VIEW},
+    {0, 1, ICON_PET_MOODS,  "Moods",      COLOR_GREEN,         STATE_PET_MOODS_VIEW},
+    {1, 1, ICON_SYSINFO,    "Sys Info",   COLOR_YELLOW,        STATE_SYSINFO_VIEW},
+    {2, 1, ICON_WEB_STREAM, "WebStream",  COLOR_CYAN_ACCENT,   STATE_WEB_STREAM_VIEW},
+    {3, 1, ICON_GALLERY,    "Touch Test", COLOR_CYAN_ACCENT,   STATE_CALIBRATE_VIEW}
 };
 
 #define MENU_ITEM_COUNT (sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]))
@@ -162,6 +164,10 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
             handled = app_torch_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
             break;
 
+        case STATE_MUSIC_VIEW:
+            handled = app_music_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
+            break;
+
         case STATE_CALIBRATE_VIEW:
             handled = app_touch_test_handle_touch(tx, ty, rx, ry, &next_state);
             break;
@@ -176,6 +182,8 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
 
         if (s_current_state == STATE_ROBOEYES_VIEW) {
             roboeyes_set_active(true);
+        } else if (s_current_state == STATE_MUSIC_VIEW) {
+            app_music_init();
         }
     }
 }
@@ -217,6 +225,9 @@ static void app_launcher_task(void *pvParameters)
                     break;
                 case STATE_TORCH_VIEW:
                     app_torch_draw();
+                    break;
+                case STATE_MUSIC_VIEW:
+                    app_music_draw();
                     break;
                 case STATE_CALIBRATE_VIEW:
                     app_touch_test_draw();

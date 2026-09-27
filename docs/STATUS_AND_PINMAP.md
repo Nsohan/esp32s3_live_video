@@ -18,17 +18,23 @@ This document serves as the single source of truth for the current hardware brin
   - DVP interface streaming QVGA (320×240) JPEG frames with auto-exposure, auto-gain, and double framebuffers in 8MB Octal PSRAM in [`main/drivers/camera/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/drivers/camera/).
 - **RoboEyes Animation System**:
   - Loona/Emo-style glowing procedural eye expressions (Happy, Blink, Laugh, Angry, Tired, Curious, Cyclops, Winking) running on Core 1 ([`components/RoboEyes`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/components/RoboEyes)).
+- **MicroSD Card Storage Driver (Display SPI Header)**:
+  - Mounted at `/sdcard` via FATFS over `SPI2_HOST` with `SD_CS = GPIO 14` in [`main/drivers/storage/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/drivers/storage/).
+- **MAX98357A I2S Audio Driver & Synth Generator**:
+  - High-performance 16-bit DMA I2S audio streaming on BCLK: 0, WS: 48, DOUT: 21 with software volume scaling (0-100%) and clean chirp generator in [`main/drivers/audio/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/drivers/audio/).
+- **Streaming MP3 / WAV Audio Player Service**:
+  - Background FreeRTOS task with `minimp3` chunked stream decoder for smooth playback from `/sdcard/music/` and `/sdcard/sounds/` in [`main/services/audio_player/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/services/audio_player/).
 - **Interactive Smartphone App Launcher**:
   - 8-tile interactive launcher on Core 0 with touch navigation, status bar, and automatic screensaver timer in [`main/core/app_launcher.c`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/core/app_launcher.c).
 - **8 Built-in Touch Apps**:
   1. `Camera Preview`: Live on-screen viewfinder.
   2. `RoboEyes`: Interactive eye expressions test.
-  3. `Moods`: Emotional state selector.
+  3. `Music Player`: Full SD MP3/WAV playback, track list, play/pause, volume control.
   4. `Settings`: System configurations.
-  5. `SysInfo`: Live hardware specs, free heap, PSRAM, CPU freq, uptime, and MAC address.
-  6. `Torch`: Full-screen white illumination tool.
-  7. `Touch Test`: 24-block touch calibration grid.
-  8. `Web Stream`: Wi-Fi & live HTTP stream telemetry.
+  5. `Moods`: Emotional state selector.
+  6. `SysInfo`: Live hardware specs, free heap, PSRAM, CPU freq, uptime, and MAC address.
+  7. `Torch`: Full-screen white illumination tool.
+  8. `Touch Test`: 24-block touch calibration grid.
 - **Wi-Fi & HTTP MJPEG Video Streamer**:
   - Non-blocking Wi-Fi station manager with auto-reconnect and real-time MJPEG camera server in [`main/services/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/services/).
 
@@ -44,9 +50,8 @@ This document serves as the single source of truth for the current hardware brin
 - **Sensors & Telemetry**:
   - MPU6050 (GY-521) 6-axis IMU over I2C (fall detection, tilt reactions, lift-up sensing).
   - VL53L8CX / VL53L0X multi-zone ToF distance matrix for obstacle avoidance.
-- **Voice AI & Audio Pipeline**:
+- **Voice AI & Microphone Input**:
   - INMP441 I2S digital microphone capture.
-  - MAX98357A I2S Class-D DAC + speaker for speech, audio SFX, and pet vocalizations.
   - Wake-word detection & offline command parsing with Gemini Cloud AI fallback.
 
 ---
@@ -83,43 +88,43 @@ This document serves as the single source of truth for the current hardware brin
 | **Touch (XPT2046)** | T_CS | **GPIO 38** | *GPIO 0* | Defined in `touch_xpt2046.h` |
 | | T_IRQ (Pen IRQ) | **GPIO 3** | *—* | Defined in `touch_xpt2046.h` |
 | | T_CLK, T_DIN, T_DO| **40, 41, 39** | Shared | Shared SPI bus with display |
+| **SD Card (Display Slot)** | **SD_CS (Chip Select)** | **GPIO 14** | *—* | **Wired & Configured** |
+| | SD_CLK, SD_MOSI, SD_MISO | **40, 41, 39** | Shared | Shared SPI bus with display & touch |
+| **Audio DAC (MAX98357A)** | **BCLK (Bit Clock)** | **GPIO 47** | *GPIO 40* | **Active in `i2s_audio.h`** (Clean GPIO) |
+| | **WS / LRC (Word Select)** | **GPIO 48** | *GPIO 39* | **Active in `i2s_audio.h`** |
+| | **DOUT (Data In on Amp)** | **GPIO 21** | *GPIO 41* | **Active in `i2s_audio.h`** |
 | **Serial Debug** | UART0 TX / RX | **GPIO 43, 44** | GPIO 43, 44 | USB-to-UART / Flashing console |
 
 ---
 
 ## 🧭 3. Free GPIOs & Future Wiring Plan
 
-The ESP32-S3 has **9 unassigned GPIOs** remaining for all future peripherals:
-- **Available Pins:** `GPIO 0`, `GPIO 14`, `GPIO 19`, `GPIO 20`, `GPIO 21`, `GPIO 45`, `GPIO 46`, `GPIO 47`, `GPIO 48`.
+The ESP32-S3 has **5 unassigned GPIOs** remaining for motors and I2C sensors:
+- **Available Pins:** `GPIO 19`, `GPIO 20`, `GPIO 45`, `GPIO 46`, `GPIO 47`.
 
 ### Recommended Pin Allocation Plan:
 
 ```
                   ┌─────────────────────────────────────────┐
                   │          ESP32-S3 (N16R8)               │
-                  └────┬──────────────┬──────────────┬──────┘
-                       │              │              │
-              I2C Bus  │     Motors   │   I2S Audio  │
-          (PCA9685/IMU)│   (L298N)    │  (Mic & Amp) │
-                       ▼              ▼              ▼
-                 SDA: GPIO 47   L_IN1: GPIO 19  BCLK: GPIO 14
-                 SCL: GPIO 21   L_IN2: GPIO 20  WS:   GPIO 0
-                                R_IN1: GPIO 45  DIN:  GPIO 48 (Mic)
-                                R_IN2: GPIO 46  DOUT: Shared / Multiplexed
+                  └────┬──────────────────────┬─────────────┘
+                       │                      │              
+              I2C Bus (Sensors)          Motors (L298N)     
+          (PCA9685 / IMU / ToF)        (4-Wheel Drive)      
+                       ▼                      ▼              
+                 SDA: GPIO 47           L_IN1: GPIO 19       
+                 SCL: (Internal/Ext)    L_IN2: GPIO 20       
+                                        R_IN1: GPIO 45       
+                                        R_IN2: GPIO 46       
 ```
 
-1. **Shared I2C Bus (PCA9685 Servos + MPU6050 IMU + VL53L8CX ToF)**:
-   - **SDA**: `GPIO 47`
-   - **SCL**: `GPIO 21`
-2. **Drive Motors (L298N Skid-Steer)**:
+1. **Drive Motors (L298N Skid-Steer)**:
    - **Left Pair (IN1, IN2)**: `GPIO 19`, `GPIO 20`
    - **Right Pair (IN1, IN2)**: `GPIO 45`, `GPIO 46`
-   - **ENA / ENB**: Fixed 5V jumper on L298N (or modulated on `GPIO 48`)
-3. **I2S Audio Input / Output (INMP441 Mic + MAX98357A Amp)**:
-   - **I2S BCLK**: `GPIO 14`
-   - **I2S WS (Word Select)**: `GPIO 0` (strapping safe for clock/sync output)
-   - **I2S DIN (Mic Data)**: `GPIO 48`
-   - **I2S DOUT (Speaker Data)**: Multiplexed / switched
+   - **ENA / ENB**: Fixed 5V jumper on L298N
+2. **Shared I2C Bus (PCA9685 Servos + MPU6050 IMU + VL53L8CX ToF)**:
+   - **SDA**: `GPIO 47`
+   - **SCL**: Shared or remapped pin
 
 ---
 

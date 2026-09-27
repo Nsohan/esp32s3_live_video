@@ -9,11 +9,14 @@
 // Drivers
 #include "display.h"
 #include "camera_driver.h"
+#include "sdcard.h"
+#include "i2s_audio.h"
 
 // Apps
 #include "roboeyes_display.h"
 
-// Services
+// Services & Audio
+#include "audio_player.h"
 #include "wifi_service.h"
 
 static const char *TAG = "petbot_main";
@@ -37,19 +40,28 @@ void app_main(void)
         ESP_LOGE(TAG, "Display initialization failed!");
     }
 
-    // 2. Start RoboEyes Background Engine Task (Core 1)
+    // 2. Mount MicroSD Card (Display SPI Slot, CS=14)
+    ESP_LOGI(TAG, "Initializing MicroSD Card on Display SPI bus...");
+    sdcard_init();
+
+    // 3. Initialize I2S Audio Player Service (MAX98357A on GPIO 0, 48, 21)
+    ESP_LOGI(TAG, "Initializing Audio Player Service...");
+    audio_player_init();
+    audio_player_play_happy_sound(); // Play welcome startup chime
+
+    // 4. Start RoboEyes Background Engine Task (Core 1)
     roboeyes_start_cycling_task();
 
-    // 3. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
+    // 5. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();
     app_launcher_set_wifi_info(WIFI_SSID, "Connecting...");
     app_launcher_start_task();
 
-    // 4. Initialize OV2640 Camera Driver
+    // 6. Initialize OV2640 Camera Driver
     ESP_ERROR_CHECK(camera_driver_init());
 
-    // 5. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
+    // 7. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
     wifi_service_init(WIFI_SSID, WIFI_PASSWORD);
 
-    ESP_LOGI(TAG, "PetBot App Launcher UI started instantly!");
+    ESP_LOGI(TAG, "PetBot App Launcher UI & Audio System started instantly!");
 }

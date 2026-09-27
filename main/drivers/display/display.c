@@ -269,6 +269,9 @@ void display_draw_framebuffer(const uint16_t *buffer)
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
 
+#define BLOCK_BUF_SIZE 4096
+static uint16_t *s_block_dma_buf = NULL;
+
 void display_draw_color_block(int x, int y, int w, int h, uint16_t color)
 {
     if (!s_panel_handle || w <= 0 || h <= 0) return;
@@ -278,26 +281,43 @@ void display_draw_color_block(int x, int y, int w, int h, uint16_t color)
     if (y + h > LCD_V_RES) h = LCD_V_RES - y;
     if (w <= 0 || h <= 0) return;
 
-    size_t pixels = w * h;
-    uint16_t *buf = (uint16_t *)heap_caps_malloc(pixels * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!buf) {
-        buf = (uint16_t *)malloc(pixels * sizeof(uint16_t));
+    if (!s_block_dma_buf) {
+        s_block_dma_buf = (uint16_t *)heap_caps_malloc(BLOCK_BUF_SIZE * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     }
-    if (!buf) return;
 
     uint16_t be_color = SWAP_BYTES(color);
-    for (size_t i = 0; i < pixels; i++) {
-        buf[i] = be_color;
-    }
 
     if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
-    esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buf);
-    if (s_trans_done_sem) {
-        xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
-    }
-    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 
-    free(buf);
+    // If block fits in pre-allocated DMA buffer, draw directly
+    if (s_block_dma_buf && (size_t)(w * h) <= BLOCK_BUF_SIZE) {
+        size_t pixels = w * h;
+        for (size_t i = 0; i < pixels; i++) {
+            s_block_dma_buf[i] = be_color;
+        }
+        esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, s_block_dma_buf);
+        if (s_trans_done_sem) {
+            xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+        }
+    } else {
+        // Fallback: draw in chunks that fit BLOCK_BUF_SIZE
+        if (s_block_dma_buf) {
+            int lines_per_chunk = BLOCK_BUF_SIZE / w;
+            if (lines_per_chunk < 1) lines_per_chunk = 1;
+            for (size_t i = 0; i < (size_t)(w * lines_per_chunk); i++) {
+                s_block_dma_buf[i] = be_color;
+            }
+            for (int cur_y = y; cur_y < y + h; cur_y += lines_per_chunk) {
+                int cur_h = ((cur_y + lines_per_chunk) <= (y + h)) ? lines_per_chunk : ((y + h) - cur_y);
+                esp_lcd_panel_draw_bitmap(s_panel_handle, x, cur_y, x + w, cur_y + cur_h, s_block_dma_buf);
+                if (s_trans_done_sem) {
+                    xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+                }
+            }
+        }
+    }
+
+    if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }
 
 void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffer)
@@ -305,10 +325,37 @@ void display_draw_bitmap_block(int x, int y, int w, int h, const uint16_t *buffe
     if (!s_panel_handle || !buffer || w <= 0 || h <= 0) return;
     if (x < 0 || y < 0 || (x + w) > LCD_H_RES || (y + h) > LCD_V_RES) return;
 
-    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
-    esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buffer);
-    if (s_trans_done_sem) {
-        xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+    if (!s_block_dma_buf) {
+        s_block_dma_buf = (uint16_t *)heap_caps_malloc(BLOCK_BUF_SIZE * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     }
+
+    if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
+
+    size_t total_px = (size_t)(w * h);
+    if (s_block_dma_buf && total_px <= BLOCK_BUF_SIZE) {
+        memcpy(s_block_dma_buf, buffer, total_px * sizeof(uint16_t));
+        esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, s_block_dma_buf);
+        if (s_trans_done_sem) {
+            xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+        }
+    } else if (s_block_dma_buf) {
+        int lines_per_chunk = BLOCK_BUF_SIZE / w;
+        if (lines_per_chunk < 1) lines_per_chunk = 1;
+        for (int cur_y = y; cur_y < y + h; cur_y += lines_per_chunk) {
+            int cur_h = ((cur_y + lines_per_chunk) <= (y + h)) ? lines_per_chunk : ((y + h) - cur_y);
+            int offset_px = (cur_y - y) * w;
+            memcpy(s_block_dma_buf, buffer + offset_px, (size_t)(w * cur_h) * sizeof(uint16_t));
+            esp_lcd_panel_draw_bitmap(s_panel_handle, x, cur_y, x + w, cur_y + cur_h, s_block_dma_buf);
+            if (s_trans_done_sem) {
+                xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+            }
+        }
+    } else {
+        esp_lcd_panel_draw_bitmap(s_panel_handle, x, y, x + w, y + h, buffer);
+        if (s_trans_done_sem) {
+            xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
+        }
+    }
+
     if (s_display_mutex) xSemaphoreGive(s_display_mutex);
 }

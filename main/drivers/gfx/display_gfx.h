@@ -30,6 +30,7 @@ typedef enum {
     ICON_TORCH,
     ICON_PET_MOODS,
     ICON_GALLERY,
+    ICON_MUSIC,
     ICON_BACK,
     ICON_WIFI
 } IconType;

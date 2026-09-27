@@ -7,6 +7,9 @@ idf_component_register(
         "drivers/display/display.c"
         "drivers/touch/touch_xpt2046.c"
         "drivers/gfx/display_gfx.c"
+        "drivers/storage/sdcard.c"
+        "drivers/audio/i2s_audio.c"
+        "services/audio_player/audio_player.c"
         "services/wifi/wifi_service.c"
         "services/web_stream/http_stream.c"
         "apps/camera/app_camera.c"
@@ -17,6 +20,7 @@ idf_component_register(
         "apps/webstream/app_webstream.c"
         "apps/torch/app_torch.c"
         "apps/touch_test/app_touch_test.c"
+        "apps/music/app_music.c"
     INCLUDE_DIRS
         "."
         "core"
@@ -24,6 +28,9 @@ idf_component_register(
         "drivers/display"
         "drivers/touch"
         "drivers/gfx"
+        "drivers/storage"
+        "drivers/audio"
+        "services/audio_player"
         "services/wifi"
         "services/web_stream"
         "apps/camera"
@@ -34,6 +41,7 @@ idf_component_register(
         "apps/webstream"
         "apps/torch"
         "apps/touch_test"
+        "apps/music"
     REQUIRES
         esp_wifi
         nvs_flash
@@ -43,8 +51,15 @@ idf_component_register(
         esp_lcd
         esp_lcd_ili9341
         driver
+        esp_driver_i2s
+        esp_driver_sdspi
+        esp_driver_gpio
+        esp_driver_spi
         RoboEyes
         esp_system
+        fatfs
+        sdmmc
+        vfs
         espressif__esp32-camera
         espressif__esp_jpeg
 )

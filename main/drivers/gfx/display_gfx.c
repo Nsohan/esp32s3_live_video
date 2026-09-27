@@ -393,6 +393,15 @@ void gfx_draw_icon(int cx, int cy, IconType icon, uint16_t color)
             gfx_fill_round_rect(cx - 2, cy - 1, 10, 7, 1, color);
             break;
 
+        case ICON_MUSIC:
+            // Double musical note
+            gfx_fill_round_rect(cx - 8, cy + 2, 6, 5, 2, color);
+            gfx_fill_round_rect(cx + 2, cy, 6, 5, 2, color);
+            gfx_fill_rect(cx - 4, cy - 8, 2, 11, color);
+            gfx_fill_rect(cx + 6, cy - 10, 2, 11, color);
+            gfx_fill_rect(cx - 4, cy - 9, 12, 3, color);
+            break;
+
         case ICON_BACK:
             gfx_fill_rect(cx - 8, cy - 1, 14, 2, color);
             gfx_fill_rect(cx - 6, cy - 3, 2, 2, color);
