@@ -79,6 +79,34 @@ main/
 
 ---
 
+Board info
+
+(venv) PS E:\PetBot\PetBot\pet-bot\loona_petbot> esptool.py --port COM7 flash_id
+Warning: DEPRECATED: 'esptool.py' wrapper is deprecated. Please use 'esptool' or 'python -m esptool' instead.
+WARNING: Deprecated: Command 'flash_id' is deprecated. Use 'flash-id' instead.
+esptool v5.4.0
+Connected to ESP32-S3 on COM7:
+Chip type:          ESP32-S3 (QFN56) (revision v0.2)
+Features:           Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz, Embedded PSRAM 8MB (AP_3v3)
+Crystal frequency:  40MHz
+USB mode:           USB-Serial/JTAG
+MAC:                10:20:ba:4e:20:9c
+
+Stub flasher running.
+
+Flash Memory Information:
+=========================
+Manufacturer: 5e
+Device: 4018
+Detected flash size: 16MB
+Flash type set in eFuse: quad (4 data lines)
+Flash voltage set by eFuse: 3.3V
+
+Hard resetting via RTS pin...
+(venv) PS E:\PetBot\PetBot\pet-bot\loona_petbot>
+
+
+
 ## 🛠 Adding a New App in the Future
 To add any new application:
 1. Create a folder in `main/apps/<your_app>/` (e.g. `apps/music/`).
