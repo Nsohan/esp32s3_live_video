@@ -82,7 +82,16 @@ void wifi_service_init(const char *ssid, const char *password)
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    cfg.static_rx_buf_num = 4;
+    cfg.dynamic_rx_buf_num = 16;
+    cfg.dynamic_tx_buf_num = 16;
+    cfg.mgmt_sbuf_num = 16;
+    
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(err));
+        return;
+    }
 
     esp_event_handler_instance_t instance_any_id;
     esp_event_handler_instance_t instance_got_ip;

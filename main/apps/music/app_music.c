@@ -11,7 +11,7 @@
 
 static const char *TAG = "app_music";
 
-#define MAX_TRACKS 16
+#define MAX_TRACKS 32
 #define TRACK_NAME_MAX 64
 
 typedef struct {
@@ -35,10 +35,20 @@ static void scan_directory(const char *dir_path)
         if (entry->d_name[0] == '.') continue;
         const char *ext = strrchr(entry->d_name, '.');
         if (ext && (strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".wav") == 0)) {
-            strncpy(s_playlist[s_track_count].name, entry->d_name, TRACK_NAME_MAX - 1);
-            s_playlist[s_track_count].name[TRACK_NAME_MAX - 1] = '\0';
-            snprintf(s_playlist[s_track_count].path, sizeof(s_playlist[s_track_count].path), "%s/%s", dir_path, entry->d_name);
-            s_track_count++;
+            // Check if already in playlist
+            bool exists = false;
+            for (int i = 0; i < s_track_count; i++) {
+                if (strcmp(s_playlist[i].name, entry->d_name) == 0) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                strncpy(s_playlist[s_track_count].name, entry->d_name, TRACK_NAME_MAX - 1);
+                s_playlist[s_track_count].name[TRACK_NAME_MAX - 1] = '\0';
+                snprintf(s_playlist[s_track_count].path, sizeof(s_playlist[s_track_count].path), "%s/%s", dir_path, entry->d_name);
+                s_track_count++;
+            }
         }
     }
     closedir(dir);
@@ -56,8 +66,10 @@ void app_music_init(void)
     }
 
     if (sdcard_is_mounted()) {
+        scan_directory("/sdcard/sound");
         scan_directory("/sdcard/sounds");
         scan_directory("/sdcard/music");
+        scan_directory("/sdcard");
         s_scanned = true;
         ESP_LOGI(TAG, "Scanned %d tracks from SD card", s_track_count);
     }
@@ -191,7 +203,7 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
         if (s_track_count > 0) {
             int clicked_row = (ty - 82) / 25;
             int clicked_idx = s_scroll_offset + clicked_row;
-            if (clicked_idx < s_track_count) {
+            if (clicked_row >= 0 && clicked_idx >= 0 && clicked_idx < s_track_count) {
                 s_selected_idx = clicked_idx;
                 audio_player_play_file(s_playlist[s_selected_idx].path);
                 draw_track_list();

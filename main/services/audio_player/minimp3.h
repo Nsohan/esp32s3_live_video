@@ -15,11 +15,40 @@ typedef struct
     int frame_bytes, frame_offset, channels, hz, layer, bitrate_kbps;
 } mp3dec_frame_info_t;
 
+#define MAX_FREE_FORMAT_FRAME_SIZE  2304
+#define MAX_L3_FRAME_PAYLOAD_BYTES  MAX_FREE_FORMAT_FRAME_SIZE
+#define MAX_BITRESERVOIR_BYTES      511
+
+typedef struct
+{
+    const uint8_t *buf;
+    int pos, limit;
+} bs_t;
+
+typedef struct
+{
+    const uint8_t *sfbtab;
+    uint16_t part_23_length, big_values, scalefac_compress;
+    uint8_t global_gain, block_type, mixed_block_flag, n_long_sfb, n_short_sfb;
+    uint8_t table_select[3], region_count[3], subblock_gain[3];
+    uint8_t preflag, scalefac_scale, count1_table, scfsi;
+} L3_gr_info_t;
+
+typedef struct
+{
+    bs_t bs;
+    uint8_t maindata[MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES];
+    L3_gr_info_t gr_info[4];
+    float grbuf[2][576], scf[40], syn[18 + 15][2*32];
+    uint8_t ist_pos[2][39];
+} mp3dec_scratch_t;
+
 typedef struct
 {
     float mdct_overlap[2][9*32], qmf_state[15*2*32];
     int reserv, free_format_bytes;
     unsigned char header[4], reserv_buf[511];
+    mp3dec_scratch_t scratch;
 } mp3dec_t;
 
 #ifdef __cplusplus
@@ -205,12 +234,6 @@ static __inline__ __attribute__((always_inline)) int32_t minimp3_clip_int16_arm(
 
 typedef struct
 {
-    const uint8_t *buf;
-    int pos, limit;
-} bs_t;
-
-typedef struct
-{
     float scf[3*64];
     uint8_t total_bands, stereo_bands, bitalloc[64], scfcod[64];
 } L12_scale_info;
@@ -219,24 +242,6 @@ typedef struct
 {
     uint8_t tab_offset, code_tab_width, band_count;
 } L12_subband_alloc_t;
-
-typedef struct
-{
-    const uint8_t *sfbtab;
-    uint16_t part_23_length, big_values, scalefac_compress;
-    uint8_t global_gain, block_type, mixed_block_flag, n_long_sfb, n_short_sfb;
-    uint8_t table_select[3], region_count[3], subblock_gain[3];
-    uint8_t preflag, scalefac_scale, count1_table, scfsi;
-} L3_gr_info_t;
-
-typedef struct
-{
-    bs_t bs;
-    uint8_t maindata[MAX_BITRESERVOIR_BYTES + MAX_L3_FRAME_PAYLOAD_BYTES];
-    L3_gr_info_t gr_info[4];
-    float grbuf[2][576], scf[40], syn[18 + 15][2*32];
-    uint8_t ist_pos[2][39];
-} mp3dec_scratch_t;
 
 static void bs_init(bs_t *bs, const uint8_t *data, int bytes)
 {
@@ -1715,7 +1720,7 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     int i = 0, igr, frame_size = 0, success = 1;
     const uint8_t *hdr;
     bs_t bs_frame[1];
-    mp3dec_scratch_t scratch;
+    mp3dec_scratch_t *scratch = &dec->scratch;
 
     if (mp3_bytes > 4 && dec->header[0] == 0xff && hdr_compare(dec->header, mp3))
     {
@@ -1758,23 +1763,23 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
 
     if (info->layer == 3)
     {
-        int main_data_begin = L3_read_side_info(bs_frame, scratch.gr_info, hdr);
+        int main_data_begin = L3_read_side_info(bs_frame, scratch->gr_info, hdr);
         if (main_data_begin < 0 || bs_frame->pos > bs_frame->limit)
         {
             mp3dec_init(dec);
             return 0;
         }
-        success = L3_restore_reservoir(dec, bs_frame, &scratch, main_data_begin);
+        success = L3_restore_reservoir(dec, bs_frame, scratch, main_data_begin);
         if (success)
         {
             for (igr = 0; igr < (HDR_TEST_MPEG1(hdr) ? 2 : 1); igr++, pcm += 576*info->channels)
             {
-                memset(scratch.grbuf[0], 0, 576*2*sizeof(float));
-                L3_decode(dec, &scratch, scratch.gr_info + igr*info->channels, info->channels);
-                mp3d_synth_granule(dec->qmf_state, scratch.grbuf[0], 18, info->channels, pcm, scratch.syn[0]);
+                memset(scratch->grbuf[0], 0, 576*2*sizeof(float));
+                L3_decode(dec, scratch, scratch->gr_info + igr*info->channels, info->channels);
+                mp3d_synth_granule(dec->qmf_state, scratch->grbuf[0], 18, info->channels, pcm, scratch->syn[0]);
             }
         }
-        L3_save_reservoir(dec, &scratch);
+        L3_save_reservoir(dec, scratch);
     } else
     {
 #ifdef MINIMP3_ONLY_MP3
@@ -1783,15 +1788,15 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
         L12_scale_info sci[1];
         L12_read_scale_info(hdr, bs_frame, sci);
 
-        memset(scratch.grbuf[0], 0, 576*2*sizeof(float));
+        memset(scratch->grbuf[0], 0, 576*2*sizeof(float));
         for (i = 0, igr = 0; igr < 3; igr++)
         {
-            if (12 == (i += L12_dequantize_granule(scratch.grbuf[0] + i, bs_frame, sci, info->layer | 1)))
+            if (12 == (i += L12_dequantize_granule(scratch->grbuf[0] + i, bs_frame, sci, info->layer | 1)))
             {
                 i = 0;
-                L12_apply_scf_384(sci, sci->scf + igr, scratch.grbuf[0]);
-                mp3d_synth_granule(dec->qmf_state, scratch.grbuf[0], 12, info->channels, pcm, scratch.syn[0]);
-                memset(scratch.grbuf[0], 0, 576*2*sizeof(float));
+                L12_apply_scf_384(sci, sci->scf + igr, scratch->grbuf[0]);
+                mp3d_synth_granule(dec->qmf_state, scratch->grbuf[0], 12, info->channels, pcm, scratch->syn[0]);
+                memset(scratch->grbuf[0], 0, 576*2*sizeof(float));
                 pcm += 384*info->channels;
             }
             if (bs_frame->pos > bs_frame->limit)

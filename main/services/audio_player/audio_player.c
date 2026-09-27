@@ -48,8 +48,8 @@ static void extract_filename(const char *path, char *dest, size_t dest_sz)
 
 static bool play_wav_file(FILE *f)
 {
-    uint8_t header[44];
-    if (fread(header, 1, 44, f) != 44) {
+    uint8_t header[12];
+    if (fread(header, 1, 12, f) != 12) {
         ESP_LOGE(TAG, "Invalid WAV header");
         return false;
     }
@@ -59,14 +59,52 @@ static bool play_wav_file(FILE *f)
         return false;
     }
 
-    uint16_t channels = *(uint16_t *)(header + 22);
-    uint32_t sample_rate = *(uint32_t *)(header + 24);
-    uint16_t bits = *(uint16_t *)(header + 34);
+    uint16_t channels = 2;
+    uint32_t sample_rate = 44100;
+    uint16_t bits = 16;
+    bool found_fmt = false;
+    bool found_data = false;
+
+    // Scan chunks (robust against ID3 metadata, JUNK, LIST chunks)
+    while (!found_data) {
+        uint8_t chunk_hdr[8];
+        if (fread(chunk_hdr, 1, 8, f) != 8) {
+            break;
+        }
+
+        uint32_t chunk_size = *(uint32_t *)(chunk_hdr + 4);
+
+        if (memcmp(chunk_hdr, "fmt ", 4) == 0) {
+            uint8_t fmt_buf[16];
+            size_t to_read = (chunk_size < sizeof(fmt_buf)) ? chunk_size : sizeof(fmt_buf);
+            if (fread(fmt_buf, 1, to_read, f) != to_read) {
+                break;
+            }
+            channels = *(uint16_t *)(fmt_buf + 2);
+            sample_rate = *(uint32_t *)(fmt_buf + 4);
+            bits = *(uint16_t *)(fmt_buf + 14);
+            if (chunk_size > to_read) {
+                fseek(f, chunk_size - to_read, SEEK_CUR);
+            }
+            found_fmt = true;
+        } else if (memcmp(chunk_hdr, "data", 4) == 0) {
+            found_data = true;
+            break;
+        } else {
+            // Skip other metadata/junk chunks
+            fseek(f, chunk_size, SEEK_CUR);
+        }
+    }
+
+    if (!found_fmt || !found_data) {
+        ESP_LOGE(TAG, "Could not find valid fmt or data chunk in WAV file");
+        return false;
+    }
 
     ESP_LOGI(TAG, "WAV Info: %lu Hz, %d bits, %d ch", (unsigned long)sample_rate, bits, channels);
     i2s_audio_set_params(sample_rate, bits, channels);
 
-    uint8_t buf[1024];
+    uint8_t buf[2048];
     while (s_player_state != AUDIO_STATE_IDLE) {
         if (s_player_state == AUDIO_STATE_PAUSED) {
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -83,15 +121,19 @@ static bool play_wav_file(FILE *f)
         if (r == 0) break;
 
         size_t written = 0;
-        i2s_audio_write(buf, r, &written, 100);
+        i2s_audio_write(buf, r, &written, 150);
     }
     return true;
 }
 
 static bool play_mp3_file(FILE *f)
 {
-    mp3dec_t mp3d;
-    mp3dec_init(&mp3d);
+    mp3dec_t *mp3d = (mp3dec_t *)calloc(1, sizeof(mp3dec_t));
+    if (!mp3d) {
+        ESP_LOGE(TAG, "Failed to allocate MP3 decoder state");
+        return false;
+    }
+    mp3dec_init(mp3d);
 
     uint8_t *input_buf = malloc(MP3_STREAM_BUF_SIZE);
     mp3d_sample_t *pcm_out = malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(mp3d_sample_t));
@@ -100,6 +142,7 @@ static bool play_mp3_file(FILE *f)
         ESP_LOGE(TAG, "Failed to allocate MP3 decode buffers");
         if (input_buf) free(input_buf);
         if (pcm_out) free(pcm_out);
+        free(mp3d);
         return false;
     }
 
@@ -118,11 +161,8 @@ static bool play_mp3_file(FILE *f)
             break;
         }
 
-        // Fill stream buffer
+        // Refill stream buffer with next batch of bytes from SD
         if (bytes_left < (MP3_STREAM_BUF_SIZE / 2)) {
-            if (bytes_left > 0) {
-                memmove(input_buf, input_buf + (MP3_STREAM_BUF_SIZE - bytes_left), bytes_left);
-            }
             size_t read_cnt = fread(input_buf + bytes_left, 1, MP3_STREAM_BUF_SIZE - bytes_left, f);
             bytes_left += read_cnt;
             if (bytes_left == 0) {
@@ -131,19 +171,19 @@ static bool play_mp3_file(FILE *f)
         }
 
         mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(&mp3d, input_buf, bytes_left, pcm_out, &info);
+        int samples = mp3dec_decode_frame(mp3d, input_buf, bytes_left, pcm_out, &info);
 
         if (info.frame_bytes > 0) {
             bytes_left -= info.frame_bytes;
             memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
 
-            if (samples > 0) {
+            if (samples > 0 && info.hz > 0) {
                 if (is_first_frame) {
                     ESP_LOGI(TAG, "MP3 Stream: %d Hz, %d Channels, %d kbps",
                              info.hz, info.channels, info.bitrate_kbps);
-                    i2s_audio_set_params(info.hz, 16, info.channels);
                     is_first_frame = false;
                 }
+                i2s_audio_set_params(info.hz, 16, info.channels);
 
                 size_t pcm_bytes = samples * info.channels * sizeof(mp3d_sample_t);
                 size_t written = 0;
@@ -160,6 +200,7 @@ static bool play_mp3_file(FILE *f)
 
     free(input_buf);
     free(pcm_out);
+    free(mp3d);
     return true;
 }
 

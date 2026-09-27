@@ -25,7 +25,7 @@ static esp_lcd_panel_handle_t s_panel_handle = NULL;
 
 static SemaphoreHandle_t s_display_mutex = NULL;
 static SemaphoreHandle_t s_trans_done_sem = NULL;
-static uint16_t *s_chunk_buffers[DISPLAY_NUM_CHUNKS] = {NULL};
+static uint16_t *s_chunk_buffer = NULL;
 
 static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
 {
@@ -111,13 +111,11 @@ esp_err_t display_init(void)
     esp_lcd_panel_invert_color(s_panel_handle, true);
     esp_lcd_panel_disp_on_off(s_panel_handle, true);
 
-    // Allocate dedicated DMA buffers for all 6 chunks
-    for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
-        if (!s_chunk_buffers[i]) {
-            s_chunk_buffers[i] = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-            if (!s_chunk_buffers[i]) {
-                s_chunk_buffers[i] = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
-            }
+    // Allocate a single shared DMA chunk buffer to conserve internal SRAM
+    if (!s_chunk_buffer) {
+        s_chunk_buffer = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (!s_chunk_buffer) {
+            s_chunk_buffer = (uint16_t *)heap_caps_malloc(DISPLAY_CHUNK_PIXELS * sizeof(uint16_t), MALLOC_CAP_DEFAULT);
         }
     }
 
@@ -127,21 +125,19 @@ esp_err_t display_init(void)
 
 void display_fill_screen(uint16_t color)
 {
-    if (!s_panel_handle) return;
+    if (!s_panel_handle || !s_chunk_buffer) return;
     if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
 
     uint16_t be_color = SWAP_BYTES(color);
+    for (size_t p = 0; p < DISPLAY_CHUNK_PIXELS; p++) {
+        s_chunk_buffer[p] = be_color;
+    }
 
     for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
-        if (s_chunk_buffers[i]) {
-            for (size_t p = 0; p < DISPLAY_CHUNK_PIXELS; p++) {
-                s_chunk_buffers[i][p] = be_color;
-            }
-            int y = i * DISPLAY_CHUNK_LINES;
-            esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + DISPLAY_CHUNK_LINES, s_chunk_buffers[i]);
-            if (s_trans_done_sem) {
-                xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
-            }
+        int y = i * DISPLAY_CHUNK_LINES;
+        esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + DISPLAY_CHUNK_LINES, s_chunk_buffer);
+        if (s_trans_done_sem) {
+            xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
         }
     }
 
@@ -251,18 +247,16 @@ void display_draw_petbot_face(void)
 
 void display_draw_framebuffer(const uint16_t *buffer)
 {
-    if (!s_panel_handle || !buffer) return;
+    if (!s_panel_handle || !buffer || !s_chunk_buffer) return;
     if (s_display_mutex) xSemaphoreTake(s_display_mutex, portMAX_DELAY);
 
     for (int i = 0; i < DISPLAY_NUM_CHUNKS; i++) {
-        if (s_chunk_buffers[i]) {
-            int y = i * DISPLAY_CHUNK_LINES;
-            int lines_to_draw = ((y + DISPLAY_CHUNK_LINES) <= LCD_V_RES) ? DISPLAY_CHUNK_LINES : (LCD_V_RES - y);
-            memcpy(s_chunk_buffers[i], buffer + (y * LCD_H_RES), LCD_H_RES * lines_to_draw * sizeof(uint16_t));
-            esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + lines_to_draw, s_chunk_buffers[i]);
-            if (s_trans_done_sem) {
-                xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
-            }
+        int y = i * DISPLAY_CHUNK_LINES;
+        int lines_to_draw = ((y + DISPLAY_CHUNK_LINES) <= LCD_V_RES) ? DISPLAY_CHUNK_LINES : (LCD_V_RES - y);
+        memcpy(s_chunk_buffer, buffer + (y * LCD_H_RES), LCD_H_RES * lines_to_draw * sizeof(uint16_t));
+        esp_lcd_panel_draw_bitmap(s_panel_handle, 0, y, LCD_H_RES, y + lines_to_draw, s_chunk_buffer);
+        if (s_trans_done_sem) {
+            xSemaphoreTake(s_trans_done_sem, pdMS_TO_TICKS(100));
         }
     }
 

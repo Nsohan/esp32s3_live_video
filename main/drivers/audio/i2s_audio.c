@@ -27,8 +27,8 @@ esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t
              I2S_AUDIO_PIN_BCLK, I2S_AUDIO_PIN_WS, I2S_AUDIO_PIN_DOUT);
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 6;
-    chan_cfg.dma_frame_num = 256;
+    chan_cfg.dma_desc_num = 8;
+    chan_cfg.dma_frame_num = 512;
     chan_cfg.auto_clear = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
@@ -41,11 +41,15 @@ esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t
     s_current_bits = bits_per_sample;
     s_current_channels = channels;
 
+    i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+        (i2s_data_bit_width_t)bits_per_sample,
+        I2S_SLOT_MODE_STEREO);
+    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT; // 64 BCLKs per frame for MAX98357A
+    slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+
     i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-            (i2s_data_bit_width_t)bits_per_sample,
-            I2S_SLOT_MODE_STEREO),
+        .slot_cfg = slot_cfg,
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = (gpio_num_t)I2S_AUDIO_PIN_BCLK,
@@ -91,14 +95,21 @@ esp_err_t i2s_audio_set_params(uint32_t sample_rate, uint16_t bits_per_sample, u
         return ESP_OK;
     }
 
-    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
+    ESP_LOGI(TAG, "Reconfiguring I2S: Rate=%lu Hz, Bits=%d, Ch=%d",
+             (unsigned long)sample_rate, bits_per_sample, channels);
+
     i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
         (i2s_data_bit_width_t)bits_per_sample,
         I2S_SLOT_MODE_STEREO);
+    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT; // 64 BCLKs per frame for MAX98357A
+    slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
+
+    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
 
     i2s_channel_disable(s_tx_chan);
-    i2s_channel_reconfig_std_clock(s_tx_chan, &clk_cfg);
+    // Reconfigure slot BEFORE clock so clock divider uses correct slot parameters
     i2s_channel_reconfig_std_slot(s_tx_chan, &slot_cfg);
+    i2s_channel_reconfig_std_clock(s_tx_chan, &clk_cfg);
     i2s_channel_enable(s_tx_chan);
 
     s_current_rate = sample_rate;
@@ -110,10 +121,6 @@ esp_err_t i2s_audio_set_params(uint32_t sample_rate, uint16_t bits_per_sample, u
 esp_err_t i2s_audio_write(const void *src, size_t size, size_t *bytes_written, uint32_t timeout_ms)
 {
     if (!s_tx_chan) return ESP_ERR_INVALID_STATE;
-
-    if (s_volume == 100) {
-        return i2s_channel_write(s_tx_chan, src, size, bytes_written, pdMS_TO_TICKS(timeout_ms));
-    }
 
     if (s_volume == 0) {
         // Muted
@@ -130,28 +137,61 @@ esp_err_t i2s_audio_write(const void *src, size_t size, size_t *bytes_written, u
         return ESP_OK;
     }
 
-    // Apply software volume scaling
-    int16_t temp_buf[256];
     const int16_t *samples = (const int16_t *)src;
     size_t total_samples = size / sizeof(int16_t);
     size_t processed = 0;
     size_t total_bytes_out = 0;
 
-    while (processed < total_samples) {
-        size_t chunk_samples = (total_samples - processed) < 256 ? (total_samples - processed) : 256;
-        for (size_t i = 0; i < chunk_samples; i++) {
-            int32_t scaled = ((int32_t)samples[processed + i] * s_volume) / 100;
-            temp_buf[i] = (int16_t)scaled;
-        }
+    if (s_current_channels == 1) {
+        // Mono to Stereo duplication (128 mono samples -> 256 stereo samples)
+        int16_t stereo_buf[256];
+        while (processed < total_samples) {
+            size_t chunk_mono = (total_samples - processed) < 128 ? (total_samples - processed) : 128;
+            for (size_t i = 0; i < chunk_mono; i++) {
+                int32_t val = (int32_t)samples[processed + i];
+                if (s_volume < 100) {
+                    val = (val * s_volume) / 100;
+                }
+                if (val > 32767) val = 32767;
+                if (val < -32768) val = -32768;
 
-        size_t written = 0;
-        esp_err_t err = i2s_channel_write(s_tx_chan, temp_buf, chunk_samples * sizeof(int16_t), &written, pdMS_TO_TICKS(timeout_ms));
-        total_bytes_out += written;
-        if (err != ESP_OK) {
-            if (bytes_written) *bytes_written = total_bytes_out;
-            return err;
+                stereo_buf[i * 2]     = (int16_t)val; // Left
+                stereo_buf[i * 2 + 1] = (int16_t)val; // Right
+            }
+
+            size_t written = 0;
+            esp_err_t err = i2s_channel_write(s_tx_chan, stereo_buf, chunk_mono * 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(timeout_ms));
+            total_bytes_out += (written / 2);
+            if (err != ESP_OK) {
+                if (bytes_written) *bytes_written = total_bytes_out;
+                return err;
+            }
+            processed += chunk_mono;
         }
-        processed += chunk_samples;
+    } else {
+        // Stereo buffer
+        int16_t temp_buf[256];
+        while (processed < total_samples) {
+            size_t chunk_samples = (total_samples - processed) < 256 ? (total_samples - processed) : 256;
+            for (size_t i = 0; i < chunk_samples; i++) {
+                int32_t val = (int32_t)samples[processed + i];
+                if (s_volume < 100) {
+                    val = (val * s_volume) / 100;
+                }
+                if (val > 32767) val = 32767;
+                if (val < -32768) val = -32768;
+                temp_buf[i] = (int16_t)val;
+            }
+
+            size_t written = 0;
+            esp_err_t err = i2s_channel_write(s_tx_chan, temp_buf, chunk_samples * sizeof(int16_t), &written, pdMS_TO_TICKS(timeout_ms));
+            total_bytes_out += written;
+            if (err != ESP_OK) {
+                if (bytes_written) *bytes_written = total_bytes_out;
+                return err;
+            }
+            processed += chunk_samples;
+        }
     }
 
     if (bytes_written) *bytes_written = total_bytes_out;

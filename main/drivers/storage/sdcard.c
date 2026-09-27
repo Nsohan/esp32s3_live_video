@@ -72,7 +72,7 @@ esp_err_t sdcard_init(void)
     };
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_PROBING; // 400 kHz
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT; // 20 MHz high-speed SPI
 
     sdspi_device_config_t dev_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     dev_config.gpio_cs = (gpio_num_t)SDCARD_PIN_CS;
