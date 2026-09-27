@@ -12,6 +12,13 @@ idf.py build flash -p COM7 monitor
 3. In **SPI RAM config**: ensure **Mode is set to Octal Mode PSRAM** (ESP32-S3 N16R8)
 4. Save (`S`) and Quit (`Q`).
 
+
+---
+
+## 📚 Documentation
+- 📌 [System Status, Active Pin Map & Roadmap](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/docs/STATUS_AND_PINMAP.md)
+- 📺 [ILI9341 Display & RoboEyes Engine Guide](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/docs/DISPLAY_DOCUMENTATION.md)
+
 ---
 
 ## 📁 Architecture & File Structure
