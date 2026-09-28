@@ -44,8 +44,12 @@ static void scan_directory(const char *dir_path)
                 }
             }
             if (!exists) {
-                strncpy(s_playlist[s_track_count].name, entry->d_name, TRACK_NAME_MAX - 1);
-                s_playlist[s_track_count].name[TRACK_NAME_MAX - 1] = '\0';
+                size_t k = 0;
+                while (k + 1 < TRACK_NAME_MAX && entry->d_name[k] != '\0') {
+                    s_playlist[s_track_count].name[k] = entry->d_name[k];
+                    k++;
+                }
+                s_playlist[s_track_count].name[k] = '\0';
                 snprintf(s_playlist[s_track_count].path, sizeof(s_playlist[s_track_count].path), "%s/%s", dir_path, entry->d_name);
                 s_track_count++;
             }

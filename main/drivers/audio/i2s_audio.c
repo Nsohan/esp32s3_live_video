@@ -14,29 +14,9 @@ static uint32_t s_current_rate = 44100;
 static uint16_t s_current_bits = 16;
 static uint8_t s_current_channels = 2;
 static bool s_is_enabled = false;
-static uint16_t s_vol_lut[101];
-static bool s_vol_lut_initialized = false;
-
-static void init_vol_lut(void)
-{
-    if (s_vol_lut_initialized) return;
-    for (int i = 0; i <= 100; i++) {
-        if (i == 0) {
-            s_vol_lut[i] = 0;
-        } else {
-            float f = (float)i / 100.0f;
-            // Perceptual audio curve (gamma ~2.0) with 0.85 max scale factor for clean MAX98357A headroom
-            float curve = powf(f, 2.0f) * 0.85f;
-            s_vol_lut[i] = (uint16_t)(curve * 1024.0f);
-        }
-    }
-    s_vol_lut_initialized = true;
-}
 
 esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t channels)
 {
-    init_vol_lut();
-
     if (s_tx_chan != NULL) {
         ESP_LOGW(TAG, "I2S Audio already initialized");
         return ESP_OK;
@@ -47,8 +27,8 @@ esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t
              I2S_AUDIO_PIN_BCLK, I2S_AUDIO_PIN_WS, I2S_AUDIO_PIN_DOUT);
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 16;
-    chan_cfg.dma_frame_num = 1024;
+    chan_cfg.dma_desc_num = 8;
+    chan_cfg.dma_frame_num = 256; // 256 frames * 2 ch * 2 bytes = 1024 bytes per DMA buffer (safe & aligned)
     chan_cfg.auto_clear = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, &s_tx_chan, NULL);
@@ -62,9 +42,9 @@ esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t
     s_current_channels = channels;
 
     i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        (i2s_data_bit_width_t)bits_per_sample,
+        I2S_DATA_BIT_WIDTH_16BIT,
         I2S_SLOT_MODE_STEREO);
-    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
+    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
     slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
 
     i2s_std_config_t std_cfg = {
@@ -99,16 +79,14 @@ esp_err_t i2s_audio_init(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t
     }
 
     s_is_enabled = true;
-    ESP_LOGI(TAG, "MAX98357A I2S Audio ready (%lu Hz, %d-bit, Stereo, Volume: %d%%)",
-             (unsigned long)sample_rate, bits_per_sample, s_volume);
+    ESP_LOGI(TAG, "MAX98357A I2S Audio ready (%lu Hz, 16-bit, Stereo, Volume: %d%%)",
+             (unsigned long)sample_rate, s_volume);
 
     return ESP_OK;
 }
 
 esp_err_t i2s_audio_set_params(uint32_t sample_rate, uint16_t bits_per_sample, uint8_t channels)
 {
-    init_vol_lut();
-
     if (!s_tx_chan) {
         return i2s_audio_init(sample_rate, bits_per_sample, channels);
     }
@@ -121,18 +99,27 @@ esp_err_t i2s_audio_set_params(uint32_t sample_rate, uint16_t bits_per_sample, u
              (unsigned long)sample_rate, bits_per_sample, channels);
 
     i2s_std_slot_config_t slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
-        (i2s_data_bit_width_t)bits_per_sample,
+        I2S_DATA_BIT_WIDTH_16BIT,
         I2S_SLOT_MODE_STEREO);
-    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
+    slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_16BIT;
     slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
 
     i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
 
     i2s_channel_disable(s_tx_chan);
-    // Reconfigure slot BEFORE clock so clock divider uses correct slot parameters
-    i2s_channel_reconfig_std_slot(s_tx_chan, &slot_cfg);
-    i2s_channel_reconfig_std_clock(s_tx_chan, &clk_cfg);
-    i2s_channel_enable(s_tx_chan);
+    // CRITICAL: In ESP-IDF, reconfigure slot BEFORE clock so clock divider uses correct slot parameters
+    esp_err_t err_s = i2s_channel_reconfig_std_slot(s_tx_chan, &slot_cfg);
+    if (err_s != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to reconfig I2S slot: %s", esp_err_to_name(err_s));
+    }
+    esp_err_t err_c = i2s_channel_reconfig_std_clock(s_tx_chan, &clk_cfg);
+    if (err_c != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to reconfig I2S clock: %s", esp_err_to_name(err_c));
+    }
+    esp_err_t err_e = i2s_channel_enable(s_tx_chan);
+    if (err_e != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to re-enable I2S channel: %s", esp_err_to_name(err_e));
+    }
 
     s_current_rate = sample_rate;
     s_current_bits = bits_per_sample;
@@ -145,15 +132,15 @@ esp_err_t i2s_audio_write(const void *src, size_t size, size_t *bytes_written, u
     if (!s_tx_chan) return ESP_ERR_INVALID_STATE;
 
     if (s_volume == 0) {
-        // Muted
+        // Muted: send silence
         static const int16_t s_silence[256] = {0};
         size_t total_written = 0;
         while (total_written < size) {
             size_t chunk = (size - total_written) < sizeof(s_silence) ? (size - total_written) : sizeof(s_silence);
             size_t written = 0;
-            i2s_channel_write(s_tx_chan, s_silence, chunk, &written, pdMS_TO_TICKS(timeout_ms));
+            esp_err_t err = i2s_channel_write(s_tx_chan, s_silence, chunk, &written, pdMS_TO_TICKS(timeout_ms));
             total_written += written;
-            if (written == 0) break;
+            if (err != ESP_OK || written == 0) break;
         }
         if (bytes_written) *bytes_written = total_written;
         return ESP_OK;
@@ -163,59 +150,66 @@ esp_err_t i2s_audio_write(const void *src, size_t size, size_t *bytes_written, u
     size_t total_samples = size / sizeof(int16_t);
     size_t processed = 0;
     size_t total_bytes_out = 0;
-    uint16_t gain_mult = s_vol_lut[s_volume];
+
+    // Buffer to stage scaled output samples (256 stereo pairs = 512 int16 = 1024 bytes)
+    int16_t out_buf[512];
 
     if (s_current_channels == 1) {
-        // Mono to Stereo duplication
-        int16_t stereo_buf[512];
+        // Mono source: scale and duplicate to Left and Right
         while (processed < total_samples) {
             size_t chunk_mono = (total_samples - processed) < 256 ? (total_samples - processed) : 256;
             for (size_t i = 0; i < chunk_mono; i++) {
-                int32_t val = ((int32_t)samples[processed + i] * gain_mult) >> 10;
-                if (val > 32767) val = 32767;
-                if (val < -32768) val = -32768;
-
-                stereo_buf[i * 2]     = (int16_t)val; // Left
-                stereo_buf[i * 2 + 1] = (int16_t)val; // Right
+                int32_t scaled = ((int32_t)samples[processed + i] * s_volume) / 100;
+                if (scaled > 32767) scaled = 32767;
+                if (scaled < -32768) scaled = -32768;
+                out_buf[i * 2]     = (int16_t)scaled; // Left
+                out_buf[i * 2 + 1] = (int16_t)scaled; // Right
             }
 
+            size_t bytes_to_write = chunk_mono * 2 * sizeof(int16_t);
             size_t written = 0;
-            esp_err_t err = i2s_channel_write(s_tx_chan, stereo_buf, chunk_mono * 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(timeout_ms));
+            esp_err_t err = i2s_channel_write(s_tx_chan, out_buf, bytes_to_write, &written,
+                                              timeout_ms == portMAX_DELAY ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms));
             total_bytes_out += (written / 2);
             if (err != ESP_OK) {
                 if (bytes_written) *bytes_written = total_bytes_out;
                 return err;
             }
-            processed += chunk_mono;
+            size_t samples_sent = written / (2 * sizeof(int16_t));
+            processed += samples_sent;
+            if (samples_sent == 0) break;
         }
     } else {
-        // Stereo buffer: Downmix L+R so mono DAC gets full fidelity on both channels
-        int16_t temp_buf[512];
+        // Stereo source: downmix (Left + Right) / 2 and replicate to both channels
+        // Guarantees balanced mono output on MAX98357A regardless of SD_MODE pin wiring
         while (processed < total_samples) {
             size_t chunk_pairs = (total_samples - processed) / 2;
             if (chunk_pairs > 256) chunk_pairs = 256;
             if (chunk_pairs == 0) break;
 
             for (size_t i = 0; i < chunk_pairs; i++) {
-                int32_t left  = (int32_t)samples[processed + i * 2];
-                int32_t right = (int32_t)samples[processed + i * 2 + 1];
-                int32_t mono  = (left + right) / 2;
-                int32_t val   = (mono * gain_mult) >> 10;
-                if (val > 32767) val = 32767;
-                if (val < -32768) val = -32768;
-
-                temp_buf[i * 2]     = (int16_t)val; // Left
-                temp_buf[i * 2 + 1] = (int16_t)val; // Right
+                int32_t l = samples[processed + i * 2];
+                int32_t r = samples[processed + i * 2 + 1];
+                int32_t mono = (l + r) / 2;
+                int32_t scaled = (mono * s_volume) / 100;
+                if (scaled > 32767) scaled = 32767;
+                if (scaled < -32768) scaled = -32768;
+                out_buf[i * 2]     = (int16_t)scaled; // Left
+                out_buf[i * 2 + 1] = (int16_t)scaled; // Right
             }
 
+            size_t bytes_to_write = chunk_pairs * 2 * sizeof(int16_t);
             size_t written = 0;
-            esp_err_t err = i2s_channel_write(s_tx_chan, temp_buf, chunk_pairs * 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(timeout_ms));
+            esp_err_t err = i2s_channel_write(s_tx_chan, out_buf, bytes_to_write, &written,
+                                              timeout_ms == portMAX_DELAY ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms));
             total_bytes_out += written;
             if (err != ESP_OK) {
                 if (bytes_written) *bytes_written = total_bytes_out;
                 return err;
             }
-            processed += (chunk_pairs * 2);
+            size_t pairs_sent = written / (2 * sizeof(int16_t));
+            processed += (pairs_sent * 2);
+            if (pairs_sent == 0) break;
         }
     }
 
@@ -225,7 +219,6 @@ esp_err_t i2s_audio_write(const void *src, size_t size, size_t *bytes_written, u
 
 void i2s_audio_set_volume(uint8_t volume_percent)
 {
-    init_vol_lut();
     if (volume_percent > 100) volume_percent = 100;
     s_volume = volume_percent;
     ESP_LOGI(TAG, "Audio Volume set to %d%%", s_volume);
@@ -260,7 +253,6 @@ void i2s_audio_play_beep(uint32_t freq_hz, uint32_t duration_ms)
             if (generated + i < 150) amp = (double)(generated + i) / 150.0;
             else if (total_samples - (generated + i) < 150) amp = (double)(total_samples - (generated + i)) / 150.0;
 
-            // Generate loud, clean 16-bit audio waveform (28000 / 32767)
             int16_t sample = (int16_t)(sin(phase) * 28000.0 * amp);
             buf[i * 2]     = sample; // Left
             buf[i * 2 + 1] = sample; // Right
