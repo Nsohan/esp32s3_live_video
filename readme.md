@@ -18,6 +18,7 @@ idf.py build flash -p COM7 monitor
 ## 📚 Documentation
 - 📌 [System Status, Active Pin Map & Roadmap](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/docs/STATUS_AND_PINMAP.md)
 - 📺 [ILI9341 Display & RoboEyes Engine Guide](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/docs/DISPLAY_DOCUMENTATION.md)
+- 🎵 [MAX98357A I2S Audio & Music Subsystem Guide](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/docs/AUDIO_DOCUMENTATION.md)
 
 ---
 
