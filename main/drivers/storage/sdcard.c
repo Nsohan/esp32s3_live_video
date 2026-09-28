@@ -143,7 +143,7 @@ void sdcard_print_directory(const char *dir_path)
         return;
     }
 
-    ESP_LOGI(TAG, "─── Listing Directory: %s ───", dir_path);
+    ESP_LOGI(TAG, "--- Listing Directory: %s ---", dir_path);
     struct dirent *entry;
     int count = 0;
     while ((entry = readdir(dir)) != NULL) {
@@ -151,7 +151,7 @@ void sdcard_print_directory(const char *dir_path)
         ESP_LOGI(TAG, "  [%02d] %s (Type: %d)", ++count, entry->d_name, entry->d_type);
     }
     closedir(dir);
-    ESP_LOGI(TAG, "───────────────────────────────── (%d items)", count);
+    ESP_LOGI(TAG, "--------------------------------- (%d items)", count);
 }
 
 void sdcard_unmount(void)

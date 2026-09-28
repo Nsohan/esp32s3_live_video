@@ -46,6 +46,84 @@ static void extract_filename(const char *path, char *dest, size_t dest_sz)
     dest[dest_sz - 1] = '\0';
 }
 
+#include "esp_heap_caps.h"
+
+#define PSRAM_STREAM_BUF_SIZE   (128 * 1024)
+#define STAGING_BUF_SIZE        (8 * 1024)
+#define SD_READ_CHUNK_SIZE      (8 * 1024)
+
+typedef struct {
+    uint8_t *buffer;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t count;
+} psram_ring_t;
+
+static bool ring_init(psram_ring_t *rb, size_t size)
+{
+    rb->buffer = (uint8_t *)heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rb->buffer) {
+        rb->buffer = (uint8_t *)malloc(size / 4); // fallback to internal SRAM if PSRAM unavailable
+        rb->capacity = size / 4;
+    } else {
+        rb->capacity = size;
+    }
+    rb->head = 0;
+    rb->tail = 0;
+    rb->count = 0;
+    return (rb->buffer != NULL);
+}
+
+static void ring_free(psram_ring_t *rb)
+{
+    if (rb->buffer) {
+        free(rb->buffer);
+        rb->buffer = NULL;
+    }
+    rb->count = 0;
+}
+
+static size_t ring_write(psram_ring_t *rb, const uint8_t *data, size_t len)
+{
+    size_t space = rb->capacity - rb->count;
+    if (len > space) len = space;
+    if (len == 0) return 0;
+
+    size_t first_part = rb->capacity - rb->head;
+    if (first_part > len) first_part = len;
+
+    memcpy(rb->buffer + rb->head, data, first_part);
+    if (len > first_part) {
+        memcpy(rb->buffer, data + first_part, len - first_part);
+    }
+    rb->head = (rb->head + len) % rb->capacity;
+    rb->count += len;
+    return len;
+}
+
+static size_t ring_read(psram_ring_t *rb, uint8_t *data, size_t len)
+{
+    if (len > rb->count) len = rb->count;
+    if (len == 0) return 0;
+
+    size_t first_part = rb->capacity - rb->tail;
+    if (first_part > len) first_part = len;
+
+    memcpy(data, rb->buffer + rb->tail, first_part);
+    if (len > first_part) {
+        memcpy(data + first_part, rb->buffer, len - first_part);
+    }
+    rb->tail = (rb->tail + len) % rb->capacity;
+    rb->count -= len;
+    return len;
+}
+
+static size_t ring_free_space(psram_ring_t *rb)
+{
+    return rb->capacity - rb->count;
+}
+
 static bool play_wav_file(FILE *f)
 {
     uint8_t header[12];
@@ -104,7 +182,29 @@ static bool play_wav_file(FILE *f)
     ESP_LOGI(TAG, "WAV Info: %lu Hz, %d bits, %d ch", (unsigned long)sample_rate, bits, channels);
     i2s_audio_set_params(sample_rate, bits, channels);
 
-    uint8_t buf[2048];
+    psram_ring_t ring;
+    if (!ring_init(&ring, PSRAM_STREAM_BUF_SIZE)) {
+        ESP_LOGE(TAG, "Failed to allocate PSRAM ring buffer for WAV");
+        return false;
+    }
+
+    uint8_t *sd_temp = (uint8_t *)malloc(SD_READ_CHUNK_SIZE);
+    uint8_t *out_chunk = (uint8_t *)malloc(4096);
+    if (!sd_temp || !out_chunk) {
+        if (sd_temp) free(sd_temp);
+        if (out_chunk) free(out_chunk);
+        ring_free(&ring);
+        return false;
+    }
+
+    bool eof_reached = false;
+    // Pre-buffer from SD
+    while (!eof_reached && ring_free_space(&ring) >= SD_READ_CHUNK_SIZE) {
+        size_t r = fread(sd_temp, 1, SD_READ_CHUNK_SIZE, f);
+        if (r > 0) ring_write(&ring, sd_temp, r);
+        if (r < SD_READ_CHUNK_SIZE) eof_reached = true;
+    }
+
     while (s_player_state != AUDIO_STATE_IDLE) {
         if (s_player_state == AUDIO_STATE_PAUSED) {
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -114,20 +214,61 @@ static bool play_wav_file(FILE *f)
         // Check if new command arrived
         audio_cmd_t next_cmd;
         if (xQueuePeek(s_audio_cmd_queue, &next_cmd, 0) == pdTRUE) {
-            return false;
+            break;
         }
 
-        size_t r = fread(buf, 1, sizeof(buf), f);
-        if (r == 0) break;
+        // Background stream fill from SD
+        if (!eof_reached && ring_free_space(&ring) >= SD_READ_CHUNK_SIZE) {
+            size_t r = fread(sd_temp, 1, SD_READ_CHUNK_SIZE, f);
+            if (r > 0) ring_write(&ring, sd_temp, r);
+            if (r < SD_READ_CHUNK_SIZE) eof_reached = true;
+        }
 
-        size_t written = 0;
-        i2s_audio_write(buf, r, &written, 150);
+        size_t to_play = ring_read(&ring, out_chunk, 4096);
+        if (to_play == 0 && eof_reached) break;
+
+        if (to_play > 0) {
+            size_t written = 0;
+            i2s_audio_write(out_chunk, to_play, &written, 150);
+        }
     }
+
+    free(sd_temp);
+    free(out_chunk);
+    ring_free(&ring);
     return true;
+}
+
+static void skip_id3v2_tag(FILE *f)
+{
+    uint8_t hdr[10];
+    long start_pos = ftell(f);
+    if (fread(hdr, 1, 10, f) != 10) {
+        fseek(f, start_pos, SEEK_SET);
+        return;
+    }
+
+    if (hdr[0] == 'I' && hdr[1] == 'D' && hdr[2] == '3') {
+        // ID3v2 tag detected: size is a 28-bit synchsafe integer
+        uint32_t tag_size = ((hdr[6] & 0x7F) << 21) |
+                            ((hdr[7] & 0x7F) << 14) |
+                            ((hdr[8] & 0x7F) << 7)  |
+                            (hdr[9] & 0x7F);
+        size_t total_skip = 10 + tag_size;
+        if (hdr[5] & 0x10) total_skip += 10; // Footer present
+
+        ESP_LOGI(TAG, "ID3v2 tag detected (Version 2.%d.%d, size: %zu bytes). Skipping metadata...",
+                 hdr[3], hdr[4], total_skip);
+        fseek(f, start_pos + total_skip, SEEK_SET);
+    } else {
+        fseek(f, start_pos, SEEK_SET);
+    }
 }
 
 static bool play_mp3_file(FILE *f)
 {
+    skip_id3v2_tag(f);
+
     mp3dec_t *mp3d = (mp3dec_t *)calloc(1, sizeof(mp3dec_t));
     if (!mp3d) {
         ESP_LOGE(TAG, "Failed to allocate MP3 decoder state");
@@ -135,18 +276,41 @@ static bool play_mp3_file(FILE *f)
     }
     mp3dec_init(mp3d);
 
-    uint8_t *input_buf = malloc(MP3_STREAM_BUF_SIZE);
-    mp3d_sample_t *pcm_out = malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(mp3d_sample_t));
-
-    if (!input_buf || !pcm_out) {
-        ESP_LOGE(TAG, "Failed to allocate MP3 decode buffers");
-        if (input_buf) free(input_buf);
-        if (pcm_out) free(pcm_out);
+    psram_ring_t ring;
+    if (!ring_init(&ring, PSRAM_STREAM_BUF_SIZE)) {
+        ESP_LOGE(TAG, "Failed to allocate PSRAM ring buffer");
         free(mp3d);
         return false;
     }
 
-    int bytes_left = 0;
+    uint8_t *staging_buf = (uint8_t *)malloc(STAGING_BUF_SIZE);
+    mp3d_sample_t *pcm_out = (mp3d_sample_t *)malloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(mp3d_sample_t));
+    uint8_t *sd_temp = (uint8_t *)malloc(SD_READ_CHUNK_SIZE);
+
+    if (!staging_buf || !pcm_out || !sd_temp) {
+        ESP_LOGE(TAG, "Failed to allocate MP3 decode buffers");
+        if (staging_buf) free(staging_buf);
+        if (pcm_out) free(pcm_out);
+        if (sd_temp) free(sd_temp);
+        ring_free(&ring);
+        free(mp3d);
+        return false;
+    }
+
+    // 1. Initial Pre-buffering: Fill PSRAM ring buffer from SD
+    bool eof_reached = false;
+    while (!eof_reached && ring_free_space(&ring) >= SD_READ_CHUNK_SIZE) {
+        size_t r = fread(sd_temp, 1, SD_READ_CHUNK_SIZE, f);
+        if (r > 0) {
+            ring_write(&ring, sd_temp, r);
+        }
+        if (r < SD_READ_CHUNK_SIZE) {
+            eof_reached = true;
+        }
+    }
+    ESP_LOGI(TAG, "Pre-buffered %zu bytes into PSRAM ring buffer", ring.count);
+
+    size_t staging_bytes = 0;
     bool is_first_frame = true;
 
     while (s_player_state != AUDIO_STATE_IDLE) {
@@ -161,21 +325,34 @@ static bool play_mp3_file(FILE *f)
             break;
         }
 
-        // Refill stream buffer with next batch of bytes from SD
-        if (bytes_left < (MP3_STREAM_BUF_SIZE / 2)) {
-            size_t read_cnt = fread(input_buf + bytes_left, 1, MP3_STREAM_BUF_SIZE - bytes_left, f);
-            bytes_left += read_cnt;
-            if (bytes_left == 0) {
-                break; // End of file reached
+        // Top up PSRAM ring buffer from SD card in background
+        if (!eof_reached && ring_free_space(&ring) >= SD_READ_CHUNK_SIZE) {
+            size_t r = fread(sd_temp, 1, SD_READ_CHUNK_SIZE, f);
+            if (r > 0) {
+                ring_write(&ring, sd_temp, r);
+            }
+            if (r < SD_READ_CHUNK_SIZE) {
+                eof_reached = true;
             }
         }
 
+        // Top up staging buffer from PSRAM ring buffer
+        if (staging_bytes < (STAGING_BUF_SIZE / 2) && ring.count > 0) {
+            size_t pull = STAGING_BUF_SIZE - staging_bytes;
+            size_t got = ring_read(&ring, staging_buf + staging_bytes, pull);
+            staging_bytes += got;
+        }
+
+        if (staging_bytes == 0 && eof_reached) {
+            break; // End of stream reached
+        }
+
         mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(mp3d, input_buf, bytes_left, pcm_out, &info);
+        int samples = mp3dec_decode_frame(mp3d, staging_buf, staging_bytes, pcm_out, &info);
 
         if (info.frame_bytes > 0) {
-            bytes_left -= info.frame_bytes;
-            memmove(input_buf, input_buf + info.frame_bytes, bytes_left);
+            staging_bytes -= info.frame_bytes;
+            memmove(staging_buf, staging_buf + info.frame_bytes, staging_bytes);
 
             if (samples > 0 && info.hz > 0) {
                 if (is_first_frame) {
@@ -190,16 +367,30 @@ static bool play_mp3_file(FILE *f)
                 i2s_audio_write(pcm_out, pcm_bytes, &written, 150);
             }
         } else {
-            // Skip bad/sync bytes
-            if (bytes_left > 0) {
-                bytes_left--;
-                memmove(input_buf, input_buf + 1, bytes_left);
+            // Find next sync word (0xFF 0xEx)
+            size_t skip = 1;
+            for (size_t i = 1; i + 1 < staging_bytes; i++) {
+                if (staging_buf[i] == 0xFF && (staging_buf[i + 1] & 0xE0) == 0xE0) {
+                    skip = i;
+                    break;
+                }
+            }
+            if (staging_bytes > skip) {
+                staging_bytes -= skip;
+                memmove(staging_buf, staging_buf + skip, staging_bytes);
+            } else {
+                staging_bytes = 0;
+            }
+            if (eof_reached && staging_bytes == 0) {
+                break;
             }
         }
     }
 
-    free(input_buf);
+    free(staging_buf);
     free(pcm_out);
+    free(sd_temp);
+    ring_free(&ring);
     free(mp3d);
     return true;
 }
