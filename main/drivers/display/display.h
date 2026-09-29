@@ -36,6 +36,9 @@
 #define COLOR_YELLOW    0xFFE0
 #define COLOR_WHITE     0xFFFF
 #define COLOR_ORANGE    0xFD20
+#define COLOR_CYAN_ACCENT   0x07FF
+#define COLOR_ORANGE_ACCENT 0xFD20
+
 
 #ifdef __cplusplus
 extern "C" {

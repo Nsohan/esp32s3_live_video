@@ -130,10 +130,14 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
                     s_state_needs_redraw = true;
 
                     if (s_current_state == STATE_ROBOEYES_VIEW) {
+                        if (audio_player_get_state() == AUDIO_STATE_PLAYING) {
+                            roboeyes_trigger_mood(ROBOEYES_MODE_MUSIC_LISTENING);
+                        }
                         roboeyes_set_active(true);
                     } else if (s_current_state == STATE_CALIBRATE_VIEW) {
                         app_touch_test_reset();
                     }
+
                     return;
                 }
             }
@@ -259,15 +263,24 @@ static void app_launcher_task(void *pvParameters)
 
         // Auto-Screensaver Idle Trigger
         uint32_t screensaver_timeout = app_settings_get_screensaver_timeout_ms();
-        if (s_current_state == STATE_APP_MENU && screensaver_timeout > 0) {
+        if ((s_current_state == STATE_APP_MENU || 
+             s_current_state == STATE_MUSIC_VIEW ||
+             s_current_state == STATE_PET_MOODS_VIEW ||
+             s_current_state == STATE_SYSINFO_VIEW ||
+             s_current_state == STATE_SETTINGS_VIEW ||
+             s_current_state == STATE_TORCH_VIEW) && screensaver_timeout > 0) {
             if (now - last_touch_activity >= screensaver_timeout) {
                 ESP_LOGI(TAG, "Idle timeout reached (%ums) -> Switching to RoboEyes Screen Saver",
                          (unsigned int)screensaver_timeout);
                 s_current_state = STATE_ROBOEYES_VIEW;
                 s_state_needs_redraw = true;
+                if (audio_player_get_state() == AUDIO_STATE_PLAYING) {
+                    roboeyes_trigger_mood(ROBOEYES_MODE_MUSIC_LISTENING);
+                }
                 roboeyes_set_active(true);
             }
         }
+
 
         if (s_current_state != STATE_CAMERA_VIEW) {
             vTaskDelay(pdMS_TO_TICKS(25));

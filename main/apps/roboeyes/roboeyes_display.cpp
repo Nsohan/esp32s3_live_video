@@ -12,9 +12,13 @@
 #include "esp_heap_caps.h"
 
 #include "display.h"
+#include "display_gfx.h"
 #include "roboeyes_display.h"
+#include "audio_player.h"
 
 static const char *TAG = "roboeyes";
+
+
 
 // Byte swap for ILI9341 SPI (RGB565)
 #define SWAP_BYTES(x) ((uint16_t)((((uint16_t)(x) & 0xFF) << 8) | (((uint16_t)(x) >> 8) & 0xFF)))
@@ -126,6 +130,7 @@ public:
     LoonaTheme active_theme;
     bool enable_blush;
     bool is_winking;
+    bool is_listening_music;
 
     // Direct reference to RoboEyes state for atomic single-pass rendering
     RoboEyes<ESP_ILI9341_Display> *eyes_ref;
@@ -133,7 +138,7 @@ public:
     ESP_ILI9341_Display(int w = LCD_H_RES, int h = LCD_V_RES)
         : width(w), height(h), framebuffer(nullptr),
           active_theme(THEME_AMBER_GOLD), enable_blush(false), is_winking(false),
-          eyes_ref(nullptr)
+          is_listening_music(false), eyes_ref(nullptr)
     {
         init_glow_lut();
         main_color_be = SWAP_BYTES(COLOR_YELLOW);
@@ -151,6 +156,7 @@ public:
             ESP_LOGE(TAG, "Failed to allocate framebuffer for RoboEyes!");
         }
     }
+
 
     ~ESP_ILI9341_Display() {
         if (framebuffer) {
@@ -393,17 +399,131 @@ public:
         }
     }
 
+    // ─── Drawing Primitives for Music Mode (Floating Notes) ──
+    void drawFilledCircle(int16_t cx, int16_t cy, int16_t r, uint16_t color_be) {
+        if (!framebuffer || r <= 0) return;
+        for (int16_t dy = -r; dy <= r; dy++) {
+            int16_t py = cy + dy;
+            if (py < 0 || py >= height) continue;
+            int16_t w_arc = (int16_t)sqrtf((float)(r * r - dy * dy));
+            int16_t x0 = cx - w_arc;
+            int16_t x1 = cx + w_arc;
+            if (x0 < 0) x0 = 0;
+            if (x1 >= width) x1 = width - 1;
+            uint16_t *row = &framebuffer[py * width];
+            for (int16_t px = x0; px <= x1; px++) {
+                row[px] = color_be;
+            }
+        }
+    }
+
+    // ─── Single Note (♪) ───────────────────────────────────
+    void drawNoteSingle(int16_t x, int16_t y, uint16_t color_be) {
+        if (!framebuffer) return;
+        drawFilledCircle(x, y, 4, color_be);
+        for (int16_t dy = -14; dy <= 0; dy++) {
+            int16_t py = y + dy;
+            int16_t px = x + 3;
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+                framebuffer[py * width + px] = color_be;
+                if (px + 1 < width) framebuffer[py * width + px + 1] = color_be;
+            }
+        }
+        for (int16_t i = 0; i < 6; i++) {
+            int16_t px = x + 4 + i;
+            int16_t py = y - 14 + (i * i) / 5;
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+                framebuffer[py * width + px] = color_be;
+                if (py + 1 < height) framebuffer[(py + 1) * width + px] = color_be;
+            }
+        }
+    }
+
+    // ─── Beamed Double Note (♫) ────────────────────────────
+    void drawNoteDouble(int16_t x, int16_t y, uint16_t color_be) {
+        if (!framebuffer) return;
+        drawFilledCircle(x, y, 4, color_be);
+        drawFilledCircle(x + 14, y - 3, 4, color_be);
+
+        // Left stem
+        for (int16_t dy = -15; dy <= 0; dy++) {
+            int16_t py = y + dy;
+            int16_t px = x + 3;
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+                framebuffer[py * width + px] = color_be;
+            }
+        }
+        // Right stem
+        for (int16_t dy = -15; dy <= 0; dy++) {
+            int16_t py = y - 3 + dy;
+            int16_t px = x + 17;
+            if (px >= 0 && px < width && py >= 0 && py < height) {
+                framebuffer[py * width + px] = color_be;
+            }
+        }
+        // Connecting top beam
+        for (int16_t dx = 0; dx <= 14; dx++) {
+            int16_t px = x + 3 + dx;
+            int16_t py = y - 15 - (dx * 3) / 14;
+            for (int16_t ty = 0; ty < 3; ty++) {
+                if (px >= 0 && px < width && (py + ty) >= 0 && (py + ty) < height) {
+                    framebuffer[(py + ty) * width + px] = color_be;
+                }
+            }
+        }
+    }
+
+    // ─── Floating Animated Musical Notes ───────────────────
+    void drawFloatingNotes(uint32_t now) {
+        // Floating note 1 (Gold ♪, left of eyes)
+        uint32_t t1 = (now + 0) % 3200;
+        float p1 = (float)t1 / 3200.0f;
+        int16_t x1 = 28 + (int16_t)(sinf(p1 * 6.28f * 1.5f) * 8.0f);
+        int16_t y1 = 200 - (int16_t)(p1 * 160.0f);
+        drawNoteSingle(x1, y1, SWAP_BYTES(COLOR_YELLOW));
+
+        // Floating note 2 (Cyan ♫, right of eyes)
+        uint32_t t2 = (now + 1600) % 3600;
+        float p2 = (float)t2 / 3600.0f;
+        int16_t x2 = 284 + (int16_t)(sinf(p2 * 6.28f * 1.2f + 1.0f) * 8.0f);
+        int16_t y2 = 205 - (int16_t)(p2 * 165.0f);
+        drawNoteDouble(x2, y2, SWAP_BYTES(COLOR_CYAN));
+
+        // Floating note 3 (Magenta ♪, above left eye)
+        uint32_t t3 = (now + 800) % 2800;
+        float p3 = (float)t3 / 2800.0f;
+        int16_t x3 = 96 + (int16_t)(sinf(p3 * 6.28f * 2.0f + 2.0f) * 10.0f);
+        int16_t y3 = 54 - (int16_t)(p3 * 42.0f);
+        drawNoteSingle(x3, y3, SWAP_BYTES(COLOR_MAGENTA));
+
+        // Floating note 4 (Green ♫, above right eye)
+        uint32_t t4 = (now + 2400) % 3400;
+        float p4 = (float)t4 / 3400.0f;
+        int16_t x4 = 212 + (int16_t)(sinf(p4 * 6.28f * 1.7f + 3.0f) * 10.0f);
+        int16_t y4 = 54 - (int16_t)(p4 * 42.0f);
+        drawNoteDouble(x4, y4, SWAP_BYTES(COLOR_GREEN));
+    }
+
+
     void display() {
         if (!framebuffer) return;
 
+        uint32_t now = millis();
+
         // Apply Loona overlays before pushing single atomic frame to display
         if (eyes_ref) {
-            // 1. Winking Arch Overlay
+            // 1. Music Listening Mode Overlays (Floating Musical Notes)
+            if (is_listening_music) {
+                drawFloatingNotes(now);
+            }
+
+            // 2. Winking Arch Overlay
             if (is_winking) {
                 drawWinkArch(eyes_ref->eyeLx, eyes_ref->eyeLy + 24, eyes_ref->eyeLwidthCurrent, 30);
             }
 
-            // 2. Specular Catchlight Highlights (Glint) on open eyes
+
+            // 3. Specular Catchlight Highlights (Glint) on open eyes
             if (eyes_ref->eyeLheightCurrent >= 28 && !is_winking) {
                 int16_t glint_lx = eyes_ref->eyeLx + (int16_t)(eyes_ref->eyeLwidthCurrent * 0.72f);
                 int16_t glint_ly = eyes_ref->eyeLy + (int16_t)(eyes_ref->eyeLheightCurrent * 0.26f);
@@ -416,7 +536,7 @@ public:
                 drawGlint(glint_rx, glint_ry, 4);
             }
 
-            // 3. Red Blush Cheeks (Under smiling/laughing eyes)
+            // 4. Red Blush Cheeks (Under smiling/laughing/music eyes)
             if (enable_blush && !eyes_ref->cyclops) {
                 int16_t blush_y = eyes_ref->eyeLy + eyes_ref->eyeLheightCurrent - 10;
                 drawBlushPill(eyes_ref->eyeLx - 8, blush_y, 36, 14);
@@ -431,31 +551,34 @@ public:
 
 // ─── Eye Mode Cycle State Machine ─────────────────────────
 enum EyeMode {
-    MODE_DEFAULT_IDLE = 0, // 0. Default Loona glowing eyes with blinking & smooth gaze
-    MODE_HAPPY,            // 1. Happy smiling eyes with red glowing blush cheeks
-    MODE_LAUGHING,         // 2. Laughing bouncing animation with blush
-    MODE_ANGRY,            // 3. Fierce fiery focused angry eyes
-    MODE_TIRED,            // 4. Sleepy heavy eyelids
-    MODE_CONFUSED,         // 5. Shivering left-right confused animation
-    MODE_SWEATING,         // 6. Anxious sweating forehead drops
-    MODE_CURIOUS_LOOK,     // 7. Curious eyes scanning all 8 directions with dynamic scaling
-    MODE_CYCLOPS,          // 8. Single big cyclops eye
-    MODE_WINKING,          // 9. Signature Loona playful wink (arch + glowing eye)
+    MODE_DEFAULT_IDLE = 0,    // 0. Default Loona glowing eyes with blinking & smooth gaze
+    MODE_HAPPY,               // 1. Happy smiling eyes with red glowing blush cheeks
+    MODE_LAUGHING,            // 2. Laughing bouncing animation with blush
+    MODE_ANGRY,               // 3. Fierce fiery focused angry eyes
+    MODE_TIRED,               // 4. Sleepy heavy eyelids
+    MODE_CONFUSED,            // 5. Shivering left-right confused animation
+    MODE_SWEATING,            // 6. Anxious sweating forehead drops
+    MODE_CURIOUS_LOOK,        // 7. Curious eyes scanning all 8 directions with dynamic scaling
+    MODE_CYCLOPS,             // 8. Single big cyclops eye
+    MODE_WINKING,             // 9. Signature Loona playful wink (arch + glowing eye)
+    MODE_MUSIC_LISTENING,     // 10. Loona listening & grooving to music with headphones & floating notes
     MODE_MAX_COUNT
 };
 
 static const char *MODE_NAMES[MODE_MAX_COUNT] = {
-    "0/9: DEFAULT IDLE (Loona Amber Glow & Catchlight)",
-    "1/9: HAPPY MOOD (Smiling Eyes & Red Blush Cheeks)",
-    "2/9: LAUGHING ANIMATION (Joyful Up/Down Shaking + Blush)",
-    "3/9: ANGRY MOOD (Fiery Slanted Eyelids)",
-    "4/9: TIRED MOOD (Sleepy Droopy Eyelids)",
-    "5/9: CONFUSED ANIMATION (Rapid Side-to-Side Shivering)",
-    "6/9: SWEATING (Anxious Dripping Sweat)",
-    "7/9: CURIOUS GAZE (Looking Around 8 Directions)",
-    "8/9: CYCLOPS MODE (Single Centered Robot Eye)",
-    "9/9: WINKING (Loona Arched Wink & Specular Glint)"
+    "0/10: DEFAULT IDLE (Loona Amber Glow & Catchlight)",
+    "1/10: HAPPY MOOD (Smiling Eyes & Red Blush Cheeks)",
+    "2/10: LAUGHING ANIMATION (Joyful Up/Down Shaking + Blush)",
+    "3/10: ANGRY MOOD (Fiery Slanted Eyelids)",
+    "4/10: TIRED MOOD (Sleepy Droopy Eyelids)",
+    "5/10: CONFUSED ANIMATION (Rapid Side-to-Side Shivering)",
+    "6/10: SWEATING (Anxious Dripping Sweat)",
+    "7/10: CURIOUS GAZE (Looking Around 8 Directions)",
+    "8/10: CYCLOPS MODE (Single Centered Robot Eye)",
+    "9/10: WINKING (Loona Arched Wink & Specular Glint)",
+    "10/10: MUSIC LISTENING (Floating Notes & Groovy Beat)"
 };
+
 
 static void reset_eye_defaults(RoboEyes<ESP_ILI9341_Display> &eyes, ESP_ILI9341_Display &display) {
     eyes.setCyclops(false);
@@ -470,6 +593,13 @@ static void reset_eye_defaults(RoboEyes<ESP_ILI9341_Display> &eyes, ESP_ILI9341_
     eyes.setBorderradius(28, 28);
     eyes.setSpacebetween(30);
 
+    // Explicitly set current values so coordinate center calculation is exact
+    eyes.eyeLwidthCurrent = 74;
+    eyes.eyeRwidthCurrent = 74;
+    eyes.eyeLheightCurrent = 104;
+    eyes.eyeRheightCurrent = 104;
+    eyes.spaceBetweenCurrent = 30;
+
     eyes.setPosition(DEFAULT);
     eyes.setMood(DEFAULT);
     eyes.setAutoblinker(true, 2, 2);
@@ -479,7 +609,9 @@ static void reset_eye_defaults(RoboEyes<ESP_ILI9341_Display> &eyes, ESP_ILI9341_
     display.active_theme = THEME_AMBER_GOLD;
     display.enable_blush = false;
     display.is_winking = false;
+    display.is_listening_music = false;
 }
+
 
 static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes, ESP_ILI9341_Display &display) {
     reset_eye_defaults(eyes, display);
@@ -561,6 +693,16 @@ static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes, ESP_IL
             eyes.setAutoblinker(false);
             break;
 
+        case MODE_MUSIC_LISTENING:
+            display.is_listening_music = true;
+            display.enable_blush = true;
+            display.active_theme = THEME_AMBER_GOLD;
+            eyes.setMood(HAPPY);
+            eyes.setAutoblinker(true, 2, 3);
+            eyes.setIdleMode(false);
+            eyes.setPosition(DEFAULT);
+            break;
+
         default:
             break;
     }
@@ -605,6 +747,27 @@ static void roboeyes_task(void *pvParameters) {
 
         uint32_t now = millis();
 
+        // ─── Check Background Music State ─────────────────
+        bool music_playing = (audio_player_get_state() == AUDIO_STATE_PLAYING);
+
+        if (music_playing) {
+            // While music is playing, auto-switch to Music Listening mode if not already active
+            if (current_mode != MODE_MUSIC_LISTENING && s_requested_mood < 0) {
+                current_mode = MODE_MUSIC_LISTENING;
+                last_mode_switch_ms = now;
+                last_sub_action_ms = now;
+                apply_mode(current_mode, eyes, *display);
+            }
+        } else {
+            // If music just ended and we were in Music Mode, revert back to default idle
+            if (current_mode == MODE_MUSIC_LISTENING && s_requested_mood < 0) {
+                current_mode = MODE_DEFAULT_IDLE;
+                last_mode_switch_ms = now;
+                last_sub_action_ms = now;
+                apply_mode(current_mode, eyes, *display);
+            }
+        }
+
         if (s_requested_mood >= 0 && s_requested_mood < MODE_MAX_COUNT) {
             current_mode = (EyeMode)s_requested_mood;
             s_requested_mood = -1;
@@ -612,9 +775,10 @@ static void roboeyes_task(void *pvParameters) {
             apply_mode(current_mode, eyes, *display);
         }
 
-        // ─── Check 15-Second Mode Cycle ───────────────────
-        if (now - last_mode_switch_ms >= MODE_INTERVAL_MS) {
-            current_mode = (EyeMode)((current_mode + 1) % MODE_MAX_COUNT);
+        // ─── Check 15-Second Mode Cycle (Cycle through standard moods when music is NOT playing)
+        if (!music_playing && (now - last_mode_switch_ms >= MODE_INTERVAL_MS)) {
+            // Cycle modes 0..9 (leaving mode 10 for music playback)
+            current_mode = (EyeMode)((current_mode + 1) % MODE_MUSIC_LISTENING);
             last_mode_switch_ms = now;
             last_sub_action_ms = now;
             sub_step = 0;
@@ -623,6 +787,30 @@ static void roboeyes_task(void *pvParameters) {
 
         // ─── In-Mode Periodic Sub-Actions ─────────────────
         switch (current_mode) {
+            case MODE_MUSIC_LISTENING: {
+                // Groovy Beat Sway & Head-Bobbing (~105 BPM)
+                float beat_phase = (float)(now % 570) / 570.0f * 6.2831853f;
+                int bob_y = (int)(sinf(beat_phase) * 7.0f);        // Bounces up and down ±7px
+                int sway_x = (int)(sinf(beat_phase * 0.5f) * 6.0f); // Sways left and right ±6px
+
+                const int base_lx = (LCD_H_RES - (74 + 30 + 74)) / 2; // Exact center: 71
+                const int base_ly = (LCD_V_RES - 104) / 2;             // Exact center: 68
+
+                eyes.eyeLxNext = base_lx + sway_x;
+                eyes.eyeLyNext = base_ly + bob_y;
+                eyes.eyeRxNext = base_lx + sway_x + eyes.eyeLwidthCurrent + eyes.spaceBetweenCurrent;
+                eyes.eyeRyNext = base_ly + bob_y;
+
+                // Playful occasional wink on upbeat
+                if (now - last_sub_action_ms >= 3500) {
+                    eyes.blink(false, true);
+                    last_sub_action_ms = now;
+                }
+                break;
+            }
+
+
+
             case MODE_LAUGHING:
                 if (now - last_sub_action_ms >= 1800) {
                     eyes.anim_laugh();
@@ -695,3 +883,9 @@ extern "C" void roboeyes_trigger_mood(int mood_index) {
     s_requested_mood = mood_index;
     s_roboeyes_active = true;
 }
+
+extern "C" void roboeyes_trigger_music_mode(void) {
+    s_requested_mood = MODE_MUSIC_LISTENING;
+    s_roboeyes_active = true;
+}
+

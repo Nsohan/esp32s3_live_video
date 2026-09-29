@@ -9,16 +9,18 @@ void app_moods_draw(void)
     app_common_draw_header("EXPRESS EMOTIONS");
 
     const struct { const char *label; int mood_idx; uint16_t color; int x; int y; } moods[] = {
-        {"HAPPY",    1, COLOR_GREEN,   14,  40},
-        {"LAUGH",    2, COLOR_YELLOW,  166, 40},
-        {"ANGRY",    3, COLOR_RED,     14,  100},
-        {"TIRED",    4, 0x7BEF,        166, 100},
-        {"CONFUSED", 5, COLOR_MAGENTA, 14,  160},
-        {"WINKING",  9, COLOR_CYAN,    166, 160}
+        {"HAPPY",    ROBOEYES_MODE_HAPPY,           COLOR_GREEN,         14,  36},
+        {"LAUGH",    ROBOEYES_MODE_LAUGHING,        COLOR_YELLOW,        166, 36},
+        {"ANGRY",    ROBOEYES_MODE_ANGRY,           COLOR_RED,           14,  84},
+        {"TIRED",    ROBOEYES_MODE_TIRED,           0x7BEF,              166, 84},
+        {"CONFUSED", ROBOEYES_MODE_CONFUSED,        COLOR_MAGENTA,       14,  132},
+        {"SWEAT",    ROBOEYES_MODE_SWEATING,        COLOR_CYAN_ACCENT,   166, 132},
+        {"MUSIC",    ROBOEYES_MODE_MUSIC_LISTENING, COLOR_ORANGE_ACCENT, 14,  180},
+        {"WINKING",  ROBOEYES_MODE_WINKING,         COLOR_CYAN,          166, 180}
     };
-    for (int i = 0; i < 6; i++) {
-        gfx_fill_round_rect(moods[i].x, moods[i].y, 140, 48, 8, moods[i].color);
-        gfx_draw_string_centered(moods[i].x, moods[i].y + 18, 140, moods[i].label, COLOR_BLACK, moods[i].color, 1);
+    for (int i = 0; i < 8; i++) {
+        gfx_fill_round_rect(moods[i].x, moods[i].y, 140, 42, 7, moods[i].color);
+        gfx_draw_string_centered(moods[i].x, moods[i].y + 15, 140, moods[i].label, COLOR_BLACK, moods[i].color, 1);
     }
 }
 
@@ -31,14 +33,17 @@ bool app_moods_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
     }
 
     const struct { int mood; int x1; int y1; int x2; int y2; } m_boxes[] = {
-        {1, 14, 40, 154, 88},
-        {2, 166, 40, 306, 88},
-        {3, 14, 100, 154, 148},
-        {4, 166, 100, 306, 148},
-        {5, 14, 160, 154, 208},
-        {9, 166, 160, 306, 208}
+        {ROBOEYES_MODE_HAPPY,           14,  36,  154, 78},
+        {ROBOEYES_MODE_LAUGHING,        166, 36,  306, 78},
+        {ROBOEYES_MODE_ANGRY,           14,  84,  154, 126},
+        {ROBOEYES_MODE_TIRED,           166, 84,  306, 126},
+        {ROBOEYES_MODE_CONFUSED,        14,  132, 154, 174},
+        {ROBOEYES_MODE_SWEATING,        166, 132, 306, 174},
+        {ROBOEYES_MODE_MUSIC_LISTENING, 14,  180, 154, 222},
+        {ROBOEYES_MODE_WINKING,         166, 180, 306, 222}
     };
-    for (int i = 0; i < 6; i++) {
+
+    for (int i = 0; i < 8; i++) {
         if (tx >= m_boxes[i].x1 && tx <= m_boxes[i].x2 &&
             ty >= m_boxes[i].y1 && ty <= m_boxes[i].y2) {
             roboeyes_trigger_mood(m_boxes[i].mood);
@@ -50,3 +55,4 @@ bool app_moods_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
 
     return false;
 }
+
