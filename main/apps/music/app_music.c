@@ -25,6 +25,14 @@ static int s_selected_idx = 0;
 static int s_scroll_offset = 0;
 static bool s_scanned = false;
 
+// Cached render states for zero-flicker differential updates
+static int s_rendered_selected_idx = -1;
+static int s_rendered_scroll_offset = -1;
+static audio_player_state_t s_rendered_state = (audio_player_state_t)-1;
+static audio_player_state_t s_rendered_btn_state = (audio_player_state_t)-1;
+static uint8_t s_rendered_volume = 255;
+static char s_rendered_track_name[64] = "";
+
 static void scan_directory(const char *dir_path)
 {
     DIR *dir = opendir(dir_path);
@@ -58,8 +66,46 @@ static void scan_directory(const char *dir_path)
     closedir(dir);
 }
 
+void app_music_play_next(void)
+{
+    if (s_track_count <= 0) return;
+    s_selected_idx = (s_selected_idx + 1) % s_track_count;
+    if (s_selected_idx >= s_scroll_offset + 4) {
+        s_scroll_offset = s_selected_idx - 3;
+    } else if (s_selected_idx < s_scroll_offset) {
+        s_scroll_offset = s_selected_idx;
+    }
+    audio_player_play_file(s_playlist[s_selected_idx].path);
+}
+
+void app_music_play_prev(void)
+{
+    if (s_track_count <= 0) return;
+    s_selected_idx = (s_selected_idx - 1 + s_track_count) % s_track_count;
+    if (s_selected_idx < s_scroll_offset) {
+        s_scroll_offset = s_selected_idx;
+    } else if (s_selected_idx >= s_scroll_offset + 4) {
+        s_scroll_offset = s_selected_idx - 3;
+    }
+    audio_player_play_file(s_playlist[s_selected_idx].path);
+}
+
+static void on_track_completed(void)
+{
+    ESP_LOGI(TAG, "Track finished naturally -> Auto playing next track...");
+    if (s_track_count > 0) {
+        app_music_play_next();
+    }
+}
+
 void app_music_init(void)
 {
+    audio_player_set_finish_callback(on_track_completed);
+
+    if (s_scanned && s_track_count > 0) {
+        return;
+    }
+
     s_track_count = 0;
     s_selected_idx = 0;
     s_scroll_offset = 0;
@@ -79,103 +125,163 @@ void app_music_init(void)
     }
 }
 
-static void draw_status_card(void)
-{
-    // Top Status & Volume Area (Y: 34 to 75)
-    gfx_fill_round_rect(8, 34, 304, 42, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(8, 34, 304, 42, 6, COLOR_CARD_BORDER);
+// ─── Targeted Zero-Flicker Partial Render Helpers ──────────
 
-    // Current Track Info
+static void update_status_card(bool full_redraw)
+{
     const char *current_track = audio_player_get_current_track_name();
     audio_player_state_t state = audio_player_get_state();
     uint8_t vol = audio_player_get_volume();
 
-    char track_display[64];
-    snprintf(track_display, sizeof(track_display), "%.26s", current_track);
+    bool changed = (state != s_rendered_state) ||
+                   (vol != s_rendered_volume) ||
+                   (strncmp(current_track, s_rendered_track_name, sizeof(s_rendered_track_name)) != 0);
+
+    if (!full_redraw && !changed) {
+        return;
+    }
+
+    if (full_redraw) {
+        gfx_fill_round_rect(8, 34, 304, 42, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(8, 34, 304, 42, 6, COLOR_CARD_BORDER);
+    }
+
+    // Space-padded strings cleanly overwrite character cells with zero background flash
+    char track_display[32];
+    snprintf(track_display, sizeof(track_display), "%-26.26s", current_track);
     gfx_draw_string(16, 42, track_display, COLOR_CYAN_ACCENT, COLOR_CARD_BG, 1);
 
-    char state_str[48];
-    snprintf(state_str, sizeof(state_str), "%s | Vol: %d%%",
+    char temp_state[48];
+    snprintf(temp_state, sizeof(temp_state), "%s | Vol: %d%%",
              (state == AUDIO_STATE_PLAYING) ? "PLAYING" : (state == AUDIO_STATE_PAUSED) ? "PAUSED" : "IDLE",
              vol);
+    char state_str[32];
+    snprintf(state_str, sizeof(state_str), "%-26.26s", temp_state);
     gfx_draw_string(16, 58, state_str, COLOR_TEXT_DIM, COLOR_CARD_BG, 1);
+
+    s_rendered_state = state;
+    s_rendered_volume = vol;
+    strncpy(s_rendered_track_name, current_track, sizeof(s_rendered_track_name) - 1);
 }
 
-static void draw_track_list(void)
+static void draw_single_track_row(int visible_slot)
 {
-    // Track List or Speaker Test Panel (Y: 82 to 180)
-    int visible_tracks = 4;
-    int item_y = 82;
+    int track_idx = s_scroll_offset + visible_slot;
+    int item_y = 82 + visible_slot * 25;
 
+    if (track_idx >= s_track_count) {
+        gfx_fill_rect(8, item_y, 304, 22, COLOR_BG_DARK);
+        return;
+    }
+
+    bool is_selected = (track_idx == s_selected_idx);
+    uint16_t bg = is_selected ? 0x21A8 : COLOR_CARD_BG;
+    uint16_t text_col = is_selected ? COLOR_WHITE : 0xCE59;
+
+    gfx_fill_round_rect(8, item_y, 304, 22, 4, bg);
+    if (is_selected) {
+        gfx_draw_round_rect(8, item_y, 304, 22, 4, COLOR_CYAN_ACCENT);
+    }
+
+    char raw_txt[64];
+    snprintf(raw_txt, sizeof(raw_txt), "%2d. %s", track_idx + 1, s_playlist[track_idx].name);
+    char item_txt[36];
+    snprintf(item_txt, sizeof(item_txt), "%-28.28s", raw_txt);
+    gfx_draw_string(14, item_y + 6, item_txt, text_col, bg, 1);
+}
+
+static void update_track_list(bool full_redraw)
+{
     if (s_track_count == 0) {
-        // ─── Button 1: Test Speaker (Melody Chirp) ───
-        gfx_fill_round_rect(8, 82, 304, 44, 8, COLOR_GREEN);
-        gfx_draw_round_rect(8, 82, 304, 44, 8, COLOR_WHITE);
-        gfx_draw_string_centered(8, 96, 304, ">> TEST SPEAKER (CHIRP) <<", COLOR_BLACK, COLOR_GREEN, 1);
+        if (full_redraw) {
+            // Button 1: Test Speaker (Melody Chirp)
+            gfx_fill_round_rect(8, 82, 304, 44, 8, COLOR_GREEN);
+            gfx_draw_round_rect(8, 82, 304, 44, 8, COLOR_WHITE);
+            gfx_draw_string_centered(8, 96, 304, ">> TEST SPEAKER (CHIRP) <<", COLOR_BLACK, COLOR_GREEN, 1);
 
-        // ─── Button 2: Test Speaker (1kHz Pure Tone) ───
-        gfx_fill_round_rect(8, 132, 304, 44, 8, 0xFD20); // Orange / Amber
-        gfx_draw_round_rect(8, 132, 304, 44, 8, COLOR_WHITE);
-        gfx_draw_string_centered(8, 146, 304, ">> PLAY 1000Hz BEEP TONE <<", COLOR_BLACK, 0xFD20, 1);
-    } else {
-        for (int i = 0; i < visible_tracks; i++) {
-            int track_idx = s_scroll_offset + i;
-            if (track_idx >= s_track_count) {
-                gfx_fill_rect(8, item_y, 304, 22, COLOR_BG_DARK);
-                item_y += 25;
-                continue;
+            // Button 2: Test Speaker (1kHz Pure Tone)
+            gfx_fill_round_rect(8, 132, 304, 44, 8, 0xFD20); // Orange / Amber
+            gfx_draw_round_rect(8, 132, 304, 44, 8, COLOR_WHITE);
+            gfx_draw_string_centered(8, 146, 304, ">> PLAY 1000Hz BEEP TONE <<", COLOR_BLACK, 0xFD20, 1);
+        }
+        return;
+    }
+
+    bool scroll_changed = (s_scroll_offset != s_rendered_scroll_offset);
+    bool selection_changed = (s_selected_idx != s_rendered_selected_idx);
+
+    if (!full_redraw && !scroll_changed && !selection_changed) {
+        return;
+    }
+
+    if (full_redraw || scroll_changed) {
+        // Redraw all 4 visible slots
+        for (int slot = 0; slot < 4; slot++) {
+            draw_single_track_row(slot);
+        }
+    } else if (selection_changed) {
+        // Only repaint the previous selected row and the new selected row
+        for (int slot = 0; slot < 4; slot++) {
+            int track_idx = s_scroll_offset + slot;
+            if (track_idx == s_selected_idx || track_idx == s_rendered_selected_idx) {
+                draw_single_track_row(slot);
             }
-
-            bool is_selected = (track_idx == s_selected_idx);
-            uint16_t bg = is_selected ? 0x21A8 : COLOR_CARD_BG;
-            uint16_t text_col = is_selected ? COLOR_WHITE : 0xCE59;
-
-            gfx_fill_round_rect(8, item_y, 304, 22, 4, bg);
-            if (is_selected) {
-                gfx_draw_round_rect(8, item_y, 304, 22, 4, COLOR_CYAN_ACCENT);
-            }
-
-            char item_txt[64];
-            snprintf(item_txt, sizeof(item_txt), "%2d. %.28s", track_idx + 1, s_playlist[track_idx].name);
-            gfx_draw_string(14, item_y + 6, item_txt, text_col, bg, 1);
-
-            item_y += 25;
         }
     }
+
+    s_rendered_selected_idx = s_selected_idx;
+    s_rendered_scroll_offset = s_scroll_offset;
 }
 
-static void draw_controls_bar(void)
+static void update_play_pause_button(bool force)
 {
     audio_player_state_t state = audio_player_get_state();
+    if (!force && state == s_rendered_btn_state) {
+        return; // Guard against redrawing every tick -> eliminates continuous blinking!
+    }
 
-    // 1. Prev Button / Chirp
-    gfx_fill_round_rect(8, 190, 42, 40, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(8, 190, 42, 40, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(8, 204, 42, "|<", COLOR_WHITE, COLOR_CARD_BG, 2);
+    uint16_t btn_color = (state == AUDIO_STATE_PLAYING) ? COLOR_GREEN : COLOR_CYAN_ACCENT;
+    const char *btn_icon = (state == AUDIO_STATE_PLAYING) ? "||" : ">";
 
-    // 2. Play / Pause Button
-    gfx_fill_round_rect(56, 190, 60, 40, 6, (state == AUDIO_STATE_PLAYING) ? COLOR_GREEN : COLOR_CYAN_ACCENT);
-    gfx_draw_string_centered(56, 204, 60, (state == AUDIO_STATE_PLAYING) ? "||" : ">", COLOR_BLACK, (state == AUDIO_STATE_PLAYING) ? COLOR_GREEN : COLOR_CYAN_ACCENT, 2);
+    gfx_fill_round_rect(56, 190, 60, 40, 6, btn_color);
+    gfx_draw_string_centered(56, 204, 60, btn_icon, COLOR_BLACK, btn_color, 2);
 
-    // 3. Stop Button
-    gfx_fill_round_rect(122, 190, 42, 40, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(122, 190, 42, 40, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(122, 204, 42, "[]", COLOR_RED_ACCENT, COLOR_CARD_BG, 2);
+    s_rendered_btn_state = state;
+}
 
-    // 4. Next Button
-    gfx_fill_round_rect(170, 190, 42, 40, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(170, 190, 42, 40, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(170, 204, 42, ">|", COLOR_WHITE, COLOR_CARD_BG, 2);
+static void draw_controls_bar(bool full_redraw)
+{
+    if (full_redraw) {
+        // 1. Prev Button / Chirp
+        gfx_fill_round_rect(8, 190, 42, 40, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(8, 190, 42, 40, 6, COLOR_CARD_BORDER);
+        gfx_draw_string_centered(8, 204, 42, "|<", COLOR_WHITE, COLOR_CARD_BG, 2);
 
-    // 5. Vol Down [-]
-    gfx_fill_round_rect(218, 190, 42, 40, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(218, 190, 42, 40, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(218, 204, 42, "-", COLOR_WHITE, COLOR_CARD_BG, 2);
+        // 2. Play / Pause Button
+        update_play_pause_button(true);
 
-    // 6. Vol Up [+]
-    gfx_fill_round_rect(266, 190, 46, 40, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(266, 190, 46, 40, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(266, 204, 46, "+", COLOR_YELLOW, COLOR_CARD_BG, 2);
+        // 3. Stop Button
+        gfx_fill_round_rect(122, 190, 42, 40, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(122, 190, 42, 40, 6, COLOR_CARD_BORDER);
+        gfx_draw_string_centered(122, 204, 42, "[]", COLOR_RED_ACCENT, COLOR_CARD_BG, 2);
+
+        // 4. Next Button
+        gfx_fill_round_rect(170, 190, 42, 40, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(170, 190, 42, 40, 6, COLOR_CARD_BORDER);
+        gfx_draw_string_centered(170, 204, 42, ">|", COLOR_WHITE, COLOR_CARD_BG, 2);
+
+        // 5. Vol Down [-]
+        gfx_fill_round_rect(218, 190, 42, 40, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(218, 190, 42, 40, 6, COLOR_CARD_BORDER);
+        gfx_draw_string_centered(218, 204, 42, "-", COLOR_WHITE, COLOR_CARD_BG, 2);
+
+        // 6. Vol Up [+]
+        gfx_fill_round_rect(266, 190, 46, 40, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(266, 190, 46, 40, 6, COLOR_CARD_BORDER);
+        gfx_draw_string_centered(266, 204, 46, "+", COLOR_YELLOW, COLOR_CARD_BG, 2);
+    } else {
+        update_play_pause_button(false);
+    }
 }
 
 void app_music_draw(void)
@@ -187,9 +293,25 @@ void app_music_draw(void)
         app_music_init();
     }
 
-    draw_status_card();
-    draw_track_list();
-    draw_controls_bar();
+    // Invalidate cached state so full view renders cleanly once
+    s_rendered_selected_idx = -1;
+    s_rendered_scroll_offset = -1;
+    s_rendered_state = (audio_player_state_t)-1;
+    s_rendered_btn_state = (audio_player_state_t)-1;
+    s_rendered_volume = 255;
+    s_rendered_track_name[0] = '\0';
+
+    update_status_card(true);
+    update_track_list(true);
+    draw_controls_bar(true);
+}
+
+void app_music_update(void)
+{
+    // Differential updates — only redraws dirty rectangles if value changed
+    update_status_card(false);
+    update_track_list(false);
+    update_play_pause_button(false);
 }
 
 bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_redraw)
@@ -210,9 +332,7 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
             if (clicked_row >= 0 && clicked_idx >= 0 && clicked_idx < s_track_count) {
                 s_selected_idx = clicked_idx;
                 audio_player_play_file(s_playlist[s_selected_idx].path);
-                draw_track_list();
-                draw_status_card();
-                draw_controls_bar();
+                app_music_update();
                 return true;
             }
         } else {
@@ -220,16 +340,14 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
             if (ty >= 80 && ty <= 128) {
                 ESP_LOGI(TAG, "Touch triggered Speaker Test (Chirp Melody)");
                 audio_player_play_happy_sound();
-                draw_status_card();
-                draw_controls_bar();
+                app_music_update();
                 return true;
             }
             // Button 2: Test Speaker 1kHz Tone (130 - 180)
             if (ty >= 130 && ty <= 180) {
                 ESP_LOGI(TAG, "Touch triggered Speaker Test (1000Hz Tone)");
                 audio_player_play_test_tone();
-                draw_status_card();
-                draw_controls_bar();
+                app_music_update();
                 return true;
             }
         }
@@ -240,15 +358,11 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
         // 1. Prev Track / UI click (8 to 50)
         if (tx >= 8 && tx <= 50) {
             if (s_track_count > 0) {
-                s_selected_idx = (s_selected_idx - 1 + s_track_count) % s_track_count;
-                if (s_selected_idx < s_scroll_offset) s_scroll_offset = s_selected_idx;
-                audio_player_play_file(s_playlist[s_selected_idx].path);
-                draw_track_list();
+                app_music_play_prev();
             } else {
                 audio_player_play_ui_click();
             }
-            draw_status_card();
-            draw_controls_bar();
+            app_music_update();
             return true;
         }
 
@@ -257,38 +371,31 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
             if (audio_player_get_state() == AUDIO_STATE_IDLE) {
                 if (s_track_count > 0) {
                     audio_player_play_file(s_playlist[s_selected_idx].path);
-                    draw_track_list();
                 } else {
                     audio_player_play_happy_sound();
                 }
             } else {
                 audio_player_toggle_play_pause();
             }
-            draw_status_card();
-            draw_controls_bar();
+            app_music_update();
             return true;
         }
 
         // 3. Stop (122 to 164)
         if (tx >= 122 && tx <= 164) {
             audio_player_stop();
-            draw_status_card();
-            draw_controls_bar();
+            app_music_update();
             return true;
         }
 
         // 4. Next Track (170 to 212)
         if (tx >= 170 && tx <= 212) {
             if (s_track_count > 0) {
-                s_selected_idx = (s_selected_idx + 1) % s_track_count;
-                if (s_selected_idx >= s_scroll_offset + 4) s_scroll_offset = s_selected_idx - 3;
-                audio_player_play_file(s_playlist[s_selected_idx].path);
-                draw_track_list();
+                app_music_play_next();
             } else {
                 audio_player_play_test_tone();
             }
-            draw_status_card();
-            draw_controls_bar();
+            app_music_update();
             return true;
         }
 
@@ -298,7 +405,7 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
             if (cur_vol >= 10) audio_player_set_volume(cur_vol - 10);
             else audio_player_set_volume(0);
             audio_player_play_ui_click();
-            draw_status_card();
+            app_music_update();
             return true;
         }
 
@@ -307,8 +414,8 @@ bool app_music_handle_touch(int tx, int ty, AppState *next_state, bool *needs_re
             uint8_t cur_vol = audio_player_get_volume();
             if (cur_vol <= 90) audio_player_set_volume(cur_vol + 10);
             else audio_player_set_volume(100);
-            audio_player_play_happy_sound(); // Play sound effect feedback
-            draw_status_card();
+            audio_player_play_happy_sound();
+            app_music_update();
             return true;
         }
     }

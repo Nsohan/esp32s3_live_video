@@ -36,6 +36,12 @@ static QueueHandle_t s_audio_cmd_queue = NULL;
 static TaskHandle_t s_audio_task_handle = NULL;
 static audio_player_state_t s_player_state = AUDIO_STATE_IDLE;
 static char s_current_track_name[256] = "No Track";
+static audio_player_finish_cb_t s_finish_cb = NULL;
+
+void audio_player_set_finish_callback(audio_player_finish_cb_t cb)
+{
+    s_finish_cb = cb;
+}
 
 static void extract_filename(const char *path, char *dest, size_t dest_sz)
 {
@@ -134,6 +140,7 @@ static bool play_wav_file(FILE *f)
     ESP_LOGI(TAG, "WAV Stream: %lu Hz, %d bits, %d ch", (unsigned long)sample_rate, bits, channels);
     i2s_audio_set_params(sample_rate, bits, channels);
 
+    bool natural_eof = false;
     uint8_t buf[2048];
     while (s_player_state != AUDIO_STATE_IDLE) {
         if (s_player_state == AUDIO_STATE_PAUSED) {
@@ -148,12 +155,15 @@ static bool play_wav_file(FILE *f)
         }
 
         size_t r = fread(buf, 1, sizeof(buf), f);
-        if (r == 0) break;
+        if (r == 0) {
+            natural_eof = true;
+            break;
+        }
 
         size_t written = 0;
         i2s_audio_write(buf, r, &written, 500);
     }
-    return true;
+    return natural_eof && (s_player_state != AUDIO_STATE_IDLE);
 }
 
 static bool play_mp3_file(FILE *f)
@@ -180,6 +190,7 @@ static bool play_mp3_file(FILE *f)
 
     int bytes_left = 0;
     bool is_first_frame = true;
+    bool natural_eof = false;
 
     while (s_player_state != AUDIO_STATE_IDLE) {
         if (s_player_state == AUDIO_STATE_PAUSED) {
@@ -198,6 +209,7 @@ static bool play_mp3_file(FILE *f)
             size_t read_cnt = fread(input_buf + bytes_left, 1, MP3_STREAM_BUF_SIZE - bytes_left, f);
             bytes_left += read_cnt;
             if (bytes_left == 0) {
+                natural_eof = true;
                 break; // End of file reached
             }
         }
@@ -235,6 +247,11 @@ static bool play_mp3_file(FILE *f)
             bytes_left -= skip;
             if (bytes_left > 0) {
                 memmove(input_buf, input_buf + skip, bytes_left);
+            } else {
+                if (feof(f)) {
+                    natural_eof = true;
+                    break;
+                }
             }
         }
     }
@@ -242,7 +259,7 @@ static bool play_mp3_file(FILE *f)
     free(input_buf);
     free(pcm_out);
     free(mp3d);
-    return true;
+    return natural_eof && (s_player_state != AUDIO_STATE_IDLE);
 }
 
 static void audio_worker_task(void *pvParameters)
@@ -266,16 +283,21 @@ static void audio_worker_task(void *pvParameters)
 
                     s_player_state = AUDIO_STATE_PLAYING;
 
+                    bool completed = false;
                     const char *ext = strrchr(cmd.filepath, '.');
                     if (ext && strcasecmp(ext, ".wav") == 0) {
-                        play_wav_file(f);
+                        completed = play_wav_file(f);
                     } else {
-                        play_mp3_file(f);
+                        completed = play_mp3_file(f);
                     }
 
                     fclose(f);
                     s_player_state = AUDIO_STATE_IDLE;
-                    ESP_LOGI(TAG, "Finished playback of '%s'", s_current_track_name);
+                    ESP_LOGI(TAG, "Finished playback of '%s' (completed=%d)", s_current_track_name, (int)completed);
+
+                    if (completed && s_finish_cb) {
+                        s_finish_cb();
+                    }
                     break;
                 }
 

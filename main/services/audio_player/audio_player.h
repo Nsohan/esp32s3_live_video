@@ -14,10 +14,17 @@ typedef enum {
 extern "C" {
 #endif
 
+typedef void (*audio_player_finish_cb_t)(void);
+
 /**
  * @brief Initialize Audio Player background service and FreeRTOS task
  */
 esp_err_t audio_player_init(void);
+
+/**
+ * @brief Set completion callback called when a music track reaches EOF naturally
+ */
+void audio_player_set_finish_callback(audio_player_finish_cb_t cb);
 
 /**
  * @brief Play an MP3 or WAV audio file asynchronously from SD Card or Flash

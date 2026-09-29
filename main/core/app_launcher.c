@@ -240,6 +240,8 @@ static void app_launcher_task(void *pvParameters)
         // Live camera viewfinder continuous update
         if (s_current_state == STATE_CAMERA_VIEW) {
             app_camera_update();
+        } else if (s_current_state == STATE_MUSIC_VIEW) {
+            app_music_update();
         }
 
         // Poll Touch Screen
@@ -278,6 +280,7 @@ static void app_launcher_task(void *pvParameters)
 void app_launcher_init(void)
 {
     app_camera_init();
+    app_music_init();
     ESP_LOGI(TAG, "App Launcher initialized");
 }
 
