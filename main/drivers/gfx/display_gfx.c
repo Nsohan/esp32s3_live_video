@@ -372,12 +372,6 @@ void gfx_draw_icon(int cx, int cy, IconType icon, uint16_t color)
             gfx_fill_rect(cx - 1, cy - 1, 2, 2, color);
             break;
 
-        case ICON_TORCH:
-            gfx_fill_rect(cx - 4, cy - 2, 8, 14, color);
-            gfx_fill_round_rect(cx - 8, cy - 12, 16, 10, 3, color);
-            gfx_fill_rect(cx - 6, cy - 10, 12, 3, COLOR_WHITE);
-            break;
-
         case ICON_PET_MOODS:
             gfx_fill_round_rect(cx - 7, cy - 2, 14, 12, 6, color);
             gfx_fill_round_rect(cx - 10, cy - 8, 5, 5, 2, color);
@@ -438,4 +432,47 @@ void gfx_draw_app_tile(int x, int y, int size, IconType icon, const char *label,
     if (label) {
         gfx_draw_string_centered(x - 10, y + size + 4, size + 20, label, COLOR_WHITE, COLOR_BLACK, 1);
     }
+}
+
+void gfx_draw_battery(int x, int y, int w, int h, int percentage, bool is_charging)
+{
+    if (percentage < 0) percentage = 0;
+    if (percentage > 100) percentage = 100;
+
+    int body_w = w - 3;
+    gfx_draw_round_rect(x, y, body_w, h, 2, COLOR_WHITE);
+    gfx_fill_rect(x + body_w, y + 2, 2, h - 4, COLOR_WHITE);
+
+    int max_inner_w = body_w - 4;
+    int inner_h = h - 4;
+    int fill_w = (max_inner_w * percentage) / 100;
+
+    uint16_t fill_color;
+    if (percentage > 40) {
+        fill_color = COLOR_GREEN;
+    } else if (percentage >= 20) {
+        fill_color = COLOR_YELLOW;
+    } else {
+        fill_color = COLOR_RED;
+    }
+
+    if (fill_w > 0) {
+        gfx_fill_rect(x + 2, y + 2, fill_w, inner_h, fill_color);
+    }
+
+    if (max_inner_w > fill_w) {
+        gfx_fill_rect(x + 2 + fill_w, y + 2, max_inner_w - fill_w, inner_h, 0x0861);
+    }
+
+    if (is_charging) {
+        gfx_fill_rect(x + body_w / 2 - 1, y + 1, 3, h - 2, COLOR_WHITE);
+    }
+}
+
+void gfx_draw_wifi_indicator(int cx, int cy, bool connected)
+{
+    uint16_t col = connected ? COLOR_GREEN_ACCENT : COLOR_TEXT_DIM;
+    gfx_fill_rect(cx - 6, cy - 5, 13, 2, col);
+    gfx_fill_rect(cx - 4, cy - 2, 9, 2, col);
+    gfx_fill_rect(cx - 1, cy + 2, 3, 3, col);
 }

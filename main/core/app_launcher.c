@@ -21,7 +21,6 @@
 #include "app_sysinfo.h"
 #include "app_moods.h"
 #include "app_webstream.h"
-#include "app_torch.h"
 #include "app_touch_test.h"
 #include "app_music.h"
 #include "audio_player.h"
@@ -75,19 +74,8 @@ static void draw_home_menu_screen(void)
 {
     display_fill_screen(0x0000);
 
-    // Status Bar
-    gfx_fill_rect(0, 0, 320, 22, 0x0861);
-    gfx_draw_icon(10, 11, ICON_WIFI, COLOR_GREEN);
-    char status_str[64];
-    snprintf(status_str, sizeof(status_str), "%s", s_wifi_ip);
-    gfx_draw_string(22, 7, status_str, COLOR_WHITE, 0x0861, 1);
-
-    uint32_t free_ram_kb = esp_get_free_heap_size() / 1024;
-    char ram_str[32];
-    snprintf(ram_str, sizeof(ram_str), "%uKB", (unsigned int)free_ram_kb);
-    gfx_draw_string_centered(260, 7, 56, ram_str, COLOR_CYAN_ACCENT, 0x0861, 1);
-
-    gfx_fill_rect(0, 22, 320, 1, 0x2124);
+    // Modern Smartphone-Style Status Bar
+    app_common_draw_status_bar();
 
     // Draw all App Tiles in the Grid
     for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
@@ -164,10 +152,6 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
             handled = app_webstream_handle_touch(tx, ty, &next_state);
             break;
 
-        case STATE_TORCH_VIEW:
-            handled = app_torch_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
-            break;
-
         case STATE_MUSIC_VIEW:
             handled = app_music_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
             break;
@@ -227,9 +211,6 @@ static void app_launcher_task(void *pvParameters)
                 case STATE_WEB_STREAM_VIEW:
                     app_webstream_draw(s_wifi_ip);
                     break;
-                case STATE_TORCH_VIEW:
-                    app_torch_draw();
-                    break;
                 case STATE_MUSIC_VIEW:
                     app_music_draw();
                     break;
@@ -246,6 +227,12 @@ static void app_launcher_task(void *pvParameters)
             app_camera_update();
         } else if (s_current_state == STATE_MUSIC_VIEW) {
             app_music_update();
+        } else if (s_current_state == STATE_APP_MENU) {
+            static uint32_t last_status_bar_tick = 0;
+            if (now - last_status_bar_tick >= 1000) {
+                app_common_draw_status_bar();
+                last_status_bar_tick = now;
+            }
         }
 
         // Poll Touch Screen
@@ -267,8 +254,7 @@ static void app_launcher_task(void *pvParameters)
              s_current_state == STATE_MUSIC_VIEW ||
              s_current_state == STATE_PET_MOODS_VIEW ||
              s_current_state == STATE_SYSINFO_VIEW ||
-             s_current_state == STATE_SETTINGS_VIEW ||
-             s_current_state == STATE_TORCH_VIEW) && screensaver_timeout > 0) {
+             s_current_state == STATE_SETTINGS_VIEW) && screensaver_timeout > 0) {
             if (now - last_touch_activity >= screensaver_timeout) {
                 ESP_LOGI(TAG, "Idle timeout reached (%ums) -> Switching to RoboEyes Screen Saver",
                          (unsigned int)screensaver_timeout);

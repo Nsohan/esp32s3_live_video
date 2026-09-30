@@ -84,7 +84,7 @@ main/
 │   ├── sysinfo/                    # System Metrics & Hardware Specs App
 │   ├── moods/                      # Interactive Pet Emotion Trigger App
 │   ├── webstream/                  # Web Browser MJPEG Stream Info App
-│   ├── torch/                      # Flashlight / Torch App
+│   ├── music/                      # SD Music & Sound Player App
 │   └── touch_test/                 # 24-Block Touch Calibration App
 │
 ├── services/                       # Background Connectivity & Network Services

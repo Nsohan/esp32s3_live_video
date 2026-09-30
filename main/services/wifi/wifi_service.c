@@ -11,6 +11,8 @@
 #include "app_launcher.h"
 #include "http_stream.h"
 
+#include "esp_sntp.h"
+
 static const char *TAG = "wifi_service";
 static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
@@ -21,6 +23,20 @@ static int s_retry_num = 0;
 static char s_current_ip[32] = "Connecting...";
 static char s_saved_ssid[32] = "";
 static bool s_server_started = false;
+static bool s_is_connected = false;
+
+static void init_sntp(void)
+{
+    static bool sntp_started = false;
+    if (!sntp_started) {
+        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, "pool.ntp.org");
+        esp_sntp_setservername(1, "time.google.com");
+        esp_sntp_init();
+        sntp_started = true;
+        ESP_LOGI(TAG, "SNTP network time sync started");
+    }
+}
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                            int32_t event_id, void *event_data)
@@ -30,6 +46,7 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGW(TAG, "WiFi disconnected, reason: %d", disconn ? disconn->reason : -1);
+        s_is_connected = false;
         snprintf(s_current_ip, sizeof(s_current_ip), "Disconnected");
         app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
 
@@ -45,10 +62,14 @@ static void event_handler(void *arg, esp_event_base_t event_base,
         snprintf(s_current_ip, sizeof(s_current_ip), IPSTR, IP2STR(&event->ip_info.ip));
         ESP_LOGI(TAG, "[OK] WiFi Connected! IP: %s", s_current_ip);
         s_retry_num = 0;
+        s_is_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
         // Update App Launcher status bar live
         app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
+
+        // Start background SNTP network clock sync
+        init_sntp();
 
         // Start HTTP stream server once IP is obtained
         if (!s_server_started) {
@@ -61,6 +82,11 @@ static void event_handler(void *arg, esp_event_base_t event_base,
 const char* wifi_service_get_ip_string(void)
 {
     return s_current_ip;
+}
+
+bool wifi_service_is_connected(void)
+{
+    return s_is_connected;
 }
 
 void wifi_service_init(const char *ssid, const char *password)

@@ -19,6 +19,11 @@ void wifi_service_init(const char *ssid, const char *password);
  */
 const char* wifi_service_get_ip_string(void);
 
+/**
+ * @brief Check if WiFi is currently connected and has IP
+ */
+bool wifi_service_is_connected(void);
+
 // Compatibility aliases
 #define wifi_init(ssid, pwd) wifi_service_init(ssid, pwd)
 #define wifi_get_ip_string() wifi_service_get_ip_string()

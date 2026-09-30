@@ -18,7 +18,6 @@ typedef enum {
     STATE_SYSINFO_VIEW,     // System Metrics App
     STATE_PET_MOODS_VIEW,   // Emotions / Moods App
     STATE_WEB_STREAM_VIEW,  // Web Stream Info App
-    STATE_TORCH_VIEW,       // Flashlight / Torch App
     STATE_MUSIC_VIEW,       // SD Music & Sound Player App
     STATE_CALIBRATE_VIEW    // 24-Block Touch Calibration & Diagnostic App
 } AppState;
@@ -28,6 +27,11 @@ typedef enum {
  * @param title Screen title text
  */
 void app_common_draw_header(const char *title);
+
+/**
+ * @brief Draw modern smartphone-style status bar (notifications on left, time in middle, wifi & battery on right)
+ */
+void app_common_draw_status_bar(void);
 
 /**
  * @brief Check if the [BACK] button area was pressed (Top-Left: X <= 70, Y <= 30)

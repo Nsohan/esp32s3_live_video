@@ -12,13 +12,13 @@ idf_component_register(
         "services/audio_player/audio_player.c"
         "services/wifi/wifi_service.c"
         "services/web_stream/http_stream.c"
+        "services/battery/battery_service.c"
         "apps/camera/app_camera.c"
         "apps/roboeyes/roboeyes_display.cpp"
         "apps/settings/app_settings.c"
         "apps/sysinfo/app_sysinfo.c"
         "apps/moods/app_moods.c"
         "apps/webstream/app_webstream.c"
-        "apps/torch/app_torch.c"
         "apps/touch_test/app_touch_test.c"
         "apps/music/app_music.c"
     INCLUDE_DIRS
@@ -33,17 +33,18 @@ idf_component_register(
         "services/audio_player"
         "services/wifi"
         "services/web_stream"
+        "services/battery"
         "apps/camera"
         "apps/roboeyes"
         "apps/settings"
         "apps/sysinfo"
         "apps/moods"
         "apps/webstream"
-        "apps/torch"
         "apps/touch_test"
         "apps/music"
     REQUIRES
         esp_wifi
+        lwip
         nvs_flash
         esp_netif
         esp_http_server

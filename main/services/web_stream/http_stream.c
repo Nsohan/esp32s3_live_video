@@ -12,6 +12,12 @@ static const char *STREAM_CONTENT_TYPE =
     "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 
 static volatile bool streaming_enabled = true;
+static volatile bool s_client_streaming = false;
+
+bool http_stream_is_active(void)
+{
+    return s_client_streaming;
+}
 
 static esp_err_t stream_handler(httpd_req_t *req)
 {
@@ -42,6 +48,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Connection", "keep-alive");
 
     ESP_LOGI(TAG, "Stream handler started for client");
+    s_client_streaming = true;
 
     while (streaming_enabled) {
         fb = esp_camera_fb_get();
@@ -74,6 +81,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    s_client_streaming = false;
     ESP_LOGI(TAG, "Stream handler closed. Total frames: %d", frame_count);
     return res;
 }

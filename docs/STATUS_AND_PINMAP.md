@@ -33,7 +33,7 @@ This document serves as the single source of truth for the current hardware brin
   4. `Settings`: System configurations.
   5. `Moods`: Emotional state selector.
   6. `SysInfo`: Live hardware specs, free heap, PSRAM, CPU freq, uptime, and MAC address.
-  7. `Torch`: Full-screen white illumination tool.
+  7. `WebStream`: Web browser MJPEG camera stream and remote controller.
   8. `Touch Test`: 24-block touch calibration grid.
 - **Wi-Fi & HTTP MJPEG Video Streamer**:
   - Non-blocking Wi-Fi station manager with auto-reconnect and real-time MJPEG camera server in [`main/services/`](file:///e:/PetBot/PetBot/pet-bot/loona_petbot/main/services/).

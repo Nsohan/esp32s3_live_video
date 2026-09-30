@@ -18,6 +18,7 @@
 // Services & Audio
 #include "audio_player.h"
 #include "wifi_service.h"
+#include "battery_service.h"
 
 static const char *TAG = "petbot_main";
 
@@ -44,10 +45,11 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing MicroSD Card on Display SPI bus...");
     sdcard_init();
 
-    // 3. Initialize I2S Audio Player Service (MAX98357A on GPIO 0, 48, 21)
+    // 3. Initialize I2S Audio Player Service (MAX98357A on GPIO 0, 48, 21) & Battery Monitor
     ESP_LOGI(TAG, "Initializing Audio Player Service...");
     audio_player_init();
     audio_player_play_happy_sound(); // Play welcome startup chime
+    battery_service_init();
 
     // 4. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();
