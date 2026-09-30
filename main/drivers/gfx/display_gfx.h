@@ -32,7 +32,8 @@ typedef enum {
     ICON_MUSIC,
     ICON_BACK,
     ICON_WIFI,
-    ICON_BATTERY
+    ICON_BATTERY,
+    ICON_RECORDER
 } IconType;
 
 void gfx_fill_rect(int x, int y, int w, int h, uint16_t color);

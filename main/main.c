@@ -52,10 +52,8 @@ void app_main(void)
     audio_player_play_happy_sound(); // Play welcome startup chime
     battery_service_init();
 
-    // 3b. INMP441 microphone (I2S_NUM_1) + serial loudness monitor (test only)
-    if (i2s_mic_init() == ESP_OK) {
-        i2s_mic_start_level_monitor();
-    }
+    // 3b. INMP441 microphone (I2S_NUM_1) ready for Sound Recorder
+    i2s_mic_init();
 
     // 4. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();

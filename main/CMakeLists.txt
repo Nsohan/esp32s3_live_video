@@ -22,6 +22,7 @@ idf_component_register(
         "apps/webstream/app_webstream.c"
         "apps/touch_test/app_touch_test.c"
         "apps/music/app_music.c"
+        "apps/recorder/app_recorder.c"
     INCLUDE_DIRS
         "."
         "core"
@@ -43,6 +44,7 @@ idf_component_register(
         "apps/webstream"
         "apps/touch_test"
         "apps/music"
+        "apps/recorder"
     REQUIRES
         esp_wifi
         lwip

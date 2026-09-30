@@ -23,6 +23,7 @@
 #include "app_webstream.h"
 #include "app_touch_test.h"
 #include "app_music.h"
+#include "app_recorder.h"
 #include "audio_player.h"
 
 static const char *TAG = "app_launcher";
@@ -32,8 +33,12 @@ static char s_wifi_ip[32] = "0.0.0.0";
 static AppState s_current_state = STATE_APP_MENU;
 static bool s_state_needs_redraw = true;
 
-// ─── App Tile Grid Definition ─────────────────────────────
+// ─── App Drawer Pagination & Grid Definition ─────────────
+#define TOTAL_PAGES 2
+static int s_current_page = 0;
+
 typedef struct {
+    int page;
     int col;
     int row;
     IconType icon;
@@ -43,14 +48,18 @@ typedef struct {
 } AppMenuItem;
 
 static const AppMenuItem MENU_ITEMS[] = {
-    {0, 0, ICON_CAMERA,     "Camera",     COLOR_MAGENTA,       STATE_CAMERA_VIEW},
-    {1, 0, ICON_ROBOEYES,   "RoboEyes",   COLOR_CYAN,          STATE_ROBOEYES_VIEW},
-    {2, 0, ICON_MUSIC,      "Music",      COLOR_ORANGE_ACCENT, STATE_MUSIC_VIEW},
-    {3, 0, ICON_SETTINGS,   "Settings",   0x7BEF,              STATE_SETTINGS_VIEW},
-    {0, 1, ICON_PET_MOODS,  "Moods",      COLOR_GREEN,         STATE_PET_MOODS_VIEW},
-    {1, 1, ICON_SYSINFO,    "Sys Info",   COLOR_YELLOW,        STATE_SYSINFO_VIEW},
-    {2, 1, ICON_WEB_STREAM, "WebStream",  COLOR_CYAN_ACCENT,   STATE_WEB_STREAM_VIEW},
-    {3, 1, ICON_GALLERY,    "Touch Test", COLOR_CYAN_ACCENT,   STATE_CALIBRATE_VIEW}
+    // ─── PAGE 0 (Main Page) ───────────────────────────────
+    {0, 0, 0, ICON_CAMERA,     "Camera",     COLOR_MAGENTA,       STATE_CAMERA_VIEW},
+    {0, 1, 0, ICON_ROBOEYES,   "RoboEyes",   COLOR_CYAN,          STATE_ROBOEYES_VIEW},
+    {0, 2, 0, ICON_MUSIC,      "Music",      COLOR_ORANGE_ACCENT, STATE_MUSIC_VIEW},
+    {0, 3, 0, ICON_SETTINGS,   "Settings",   0x7BEF,              STATE_SETTINGS_VIEW},
+    {0, 0, 1, ICON_PET_MOODS,  "Moods",      COLOR_GREEN,         STATE_PET_MOODS_VIEW},
+    {0, 1, 1, ICON_SYSINFO,    "Sys Info",   COLOR_YELLOW,        STATE_SYSINFO_VIEW},
+    {0, 2, 1, ICON_RECORDER,   "Recorder",   COLOR_RED_ACCENT,    STATE_RECORDER_VIEW},
+    {0, 3, 1, ICON_GALLERY,    "Touch Test", COLOR_CYAN_ACCENT,   STATE_CALIBRATE_VIEW},
+
+    // ─── PAGE 1 (Second Page) ─────────────────────────────
+    {1, 0, 0, ICON_WEB_STREAM, "WebStream",  COLOR_CYAN_ACCENT,   STATE_WEB_STREAM_VIEW}
 };
 
 #define MENU_ITEM_COUNT (sizeof(MENU_ITEMS) / sizeof(MENU_ITEMS[0]))
@@ -69,6 +78,38 @@ static void get_tile_rect(int col, int row, int *x, int *y, int *w, int *h)
     *h = TILE_SIZE;
 }
 
+static void draw_arrow_right(int cx, int cy, uint16_t color)
+{
+    // Shaft
+    gfx_fill_rect(cx - 8, cy - 1, 14, 2, color);
+    // Upper diagonal
+    gfx_fill_rect(cx + 3, cy - 2, 2, 2, color);
+    gfx_fill_rect(cx + 1, cy - 4, 2, 2, color);
+    gfx_fill_rect(cx - 1, cy - 6, 2, 2, color);
+    // Lower diagonal
+    gfx_fill_rect(cx + 3, cy + 1, 2, 2, color);
+    gfx_fill_rect(cx + 1, cy + 3, 2, 2, color);
+    gfx_fill_rect(cx - 1, cy + 5, 2, 2, color);
+    // Arrow tip
+    gfx_fill_rect(cx + 5, cy - 1, 2, 2, color);
+}
+
+static void draw_arrow_left(int cx, int cy, uint16_t color)
+{
+    // Shaft
+    gfx_fill_rect(cx - 6, cy - 1, 14, 2, color);
+    // Upper diagonal
+    gfx_fill_rect(cx - 5, cy - 2, 2, 2, color);
+    gfx_fill_rect(cx - 3, cy - 4, 2, 2, color);
+    gfx_fill_rect(cx - 1, cy - 6, 2, 2, color);
+    // Lower diagonal
+    gfx_fill_rect(cx - 5, cy + 1, 2, 2, color);
+    gfx_fill_rect(cx - 3, cy + 3, 2, 2, color);
+    gfx_fill_rect(cx - 1, cy + 5, 2, 2, color);
+    // Arrow tip
+    gfx_fill_rect(cx - 7, cy - 1, 2, 2, color);
+}
+
 // ─── Home Screen App Drawer ───────────────────────────────
 static void draw_home_menu_screen(void)
 {
@@ -77,11 +118,29 @@ static void draw_home_menu_screen(void)
     // Modern Smartphone-Style Status Bar (force redraw on screen draw)
     app_common_draw_status_bar(true);
 
-    // Draw all App Tiles in the Grid
+    // Draw all App Tiles belonging to current active page
     for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
-        int tx, ty, tw, th;
-        get_tile_rect(MENU_ITEMS[i].col, MENU_ITEMS[i].row, &tx, &ty, &tw, &th);
-        gfx_draw_app_tile(tx, ty, tw, MENU_ITEMS[i].icon, MENU_ITEMS[i].name, MENU_ITEMS[i].color, false);
+        if (MENU_ITEMS[i].page == s_current_page) {
+            int tx, ty, tw, th;
+            get_tile_rect(MENU_ITEMS[i].col, MENU_ITEMS[i].row, &tx, &ty, &tw, &th);
+            gfx_draw_app_tile(tx, ty, tw, MENU_ITEMS[i].icon, MENU_ITEMS[i].name, MENU_ITEMS[i].color, false);
+        }
+    }
+
+    // Modern Smartphone Page Indicator Dots & Arrow Navigation (Y: 216 - 228)
+    int dot_y = 218;
+    if (s_current_page == 0) {
+        // Page 0: Active pill (cyan) + Inactive circle (gray)
+        gfx_fill_round_rect(144, dot_y, 14, 6, 3, COLOR_CYAN_ACCENT);
+        gfx_fill_round_rect(164, dot_y, 6, 6, 3, COLOR_CARD_BORDER);
+        // Right arrow → to navigate to Page 2
+        draw_arrow_right(290, dot_y + 3, COLOR_CYAN_ACCENT);
+    } else {
+        // Page 1: Inactive circle (gray) + Active pill (cyan)
+        gfx_fill_round_rect(144, dot_y, 6, 6, 3, COLOR_CARD_BORDER);
+        gfx_fill_round_rect(156, dot_y, 14, 6, 3, COLOR_CYAN_ACCENT);
+        // Left arrow ← to navigate to Page 1
+        draw_arrow_left(30, dot_y + 3, COLOR_CYAN_ACCENT);
     }
 }
 
@@ -104,7 +163,27 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
 
     switch (s_current_state) {
         case STATE_APP_MENU: {
+            // 1. Bottom Page Navigation Tap (Y >= 195)
+            if (ty >= 195) {
+                if (tx > 180 && s_current_page < TOTAL_PAGES - 1) {
+                    s_current_page++;
+                    s_state_needs_redraw = true;
+                    return;
+                } else if (tx < 140 && s_current_page > 0) {
+                    s_current_page--;
+                    s_state_needs_redraw = true;
+                    return;
+                } else if (tx >= 140 && tx <= 180) {
+                    s_current_page = (s_current_page == 0) ? 1 : 0;
+                    s_state_needs_redraw = true;
+                    return;
+                }
+            }
+
+            // 2. App Tile Taps on the current active page
             for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
+                if (MENU_ITEMS[i].page != s_current_page) continue;
+
                 int tile_x, tile_y, tile_w, tile_h;
                 get_tile_rect(MENU_ITEMS[i].col, MENU_ITEMS[i].row, &tile_x, &tile_y, &tile_w, &tile_h);
 
@@ -124,6 +203,8 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
                         roboeyes_set_active(true);
                     } else if (s_current_state == STATE_CALIBRATE_VIEW) {
                         app_touch_test_reset();
+                    } else if (s_current_state == STATE_RECORDER_VIEW) {
+                        app_recorder_init();
                     }
 
                     return;
@@ -156,6 +237,10 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
             handled = app_music_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
             break;
 
+        case STATE_RECORDER_VIEW:
+            handled = app_recorder_handle_touch(tx, ty, &next_state, &s_state_needs_redraw);
+            break;
+
         case STATE_CALIBRATE_VIEW:
             handled = app_touch_test_handle_touch(tx, ty, rx, ry, &next_state);
             break;
@@ -165,6 +250,10 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
     }
 
     if (handled && next_state != s_current_state) {
+        if (s_current_state == STATE_RECORDER_VIEW) {
+            app_recorder_stop();
+        }
+
         s_current_state = next_state;
         s_state_needs_redraw = true;
 
@@ -172,6 +261,8 @@ static void handle_touch_event(int tx, int ty, uint16_t rx, uint16_t ry)
             roboeyes_set_active(true);
         } else if (s_current_state == STATE_MUSIC_VIEW) {
             app_music_init();
+        } else if (s_current_state == STATE_RECORDER_VIEW) {
+            app_recorder_init();
         }
     }
 }
@@ -214,6 +305,9 @@ static void app_launcher_task(void *pvParameters)
                 case STATE_MUSIC_VIEW:
                     app_music_draw();
                     break;
+                case STATE_RECORDER_VIEW:
+                    app_recorder_draw();
+                    break;
                 case STATE_CALIBRATE_VIEW:
                     app_touch_test_draw();
                     break;
@@ -222,11 +316,13 @@ static void app_launcher_task(void *pvParameters)
             }
         }
 
-        // Live camera viewfinder continuous update
+        // Continuous / differential app updates
         if (s_current_state == STATE_CAMERA_VIEW) {
             app_camera_update();
         } else if (s_current_state == STATE_MUSIC_VIEW) {
             app_music_update();
+        } else if (s_current_state == STATE_RECORDER_VIEW) {
+            app_recorder_update();
         } else if (s_current_state == STATE_APP_MENU) {
             static uint32_t last_status_bar_tick = 0;
             if (now - last_status_bar_tick >= 1000) {

@@ -98,22 +98,38 @@ esp_err_t i2s_mic_read(int16_t *dst, size_t samples, size_t *samples_read, uint3
     return ESP_OK;
 }
 
+static TaskHandle_t s_level_task_handle = NULL;
+static volatile bool s_level_monitor_running = false;
+static volatile int s_latest_rms = 0;
+
+int i2s_mic_get_latest_rms(void)
+{
+    return s_latest_rms;
+}
+
+bool i2s_mic_is_level_monitor_running(void)
+{
+    return s_level_monitor_running;
+}
+
 static void level_task(void *arg)
 {
     int16_t buf[512];
     int tick = 0;
 
-    while (1) {
+    ESP_LOGI(TAG, "Mic Level Monitor started");
+
+    while (s_level_monitor_running) {
         size_t n = 0;
-        if (i2s_mic_read(buf, 512, &n, 1000) != ESP_OK || n == 0) {
-            ESP_LOGW(TAG, "read failed / timeout");
-            vTaskDelay(pdMS_TO_TICKS(500));
+        if (i2s_mic_read(buf, 512, &n, 200) != ESP_OK || n == 0) {
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
         double sum = 0;
         for (size_t i = 0; i < n; i++) sum += (double)buf[i] * buf[i];
         int rms = (int)sqrt(sum / n);
+        s_latest_rms = rms;
 
         // 512 samples @16k = 32 ms; log about 4x per second
         if (++tick >= 8) {
@@ -126,15 +142,31 @@ static void level_task(void *arg)
             ESP_LOGI(TAG, "RMS %5d |%s", rms, meter);
         }
     }
+
+    ESP_LOGI(TAG, "Mic Level Monitor stopped");
+    s_level_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 void i2s_mic_start_level_monitor(void)
 {
-    xTaskCreate(level_task, "mic_level", 4096, NULL, 4, NULL);
+    if (s_level_monitor_running) return;
+    s_level_monitor_running = true;
+    xTaskCreate(level_task, "mic_level", 4096, NULL, 4, &s_level_task_handle);
+}
+
+void i2s_mic_stop_level_monitor(void)
+{
+    if (!s_level_monitor_running) return;
+    s_level_monitor_running = false;
+    for (int i = 0; i < 30 && s_level_task_handle != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
 
 void i2s_mic_deinit(void)
 {
+    i2s_mic_stop_level_monitor();
     if (!s_rx_chan) return;
     i2s_channel_disable(s_rx_chan);
     i2s_del_channel(s_rx_chan);

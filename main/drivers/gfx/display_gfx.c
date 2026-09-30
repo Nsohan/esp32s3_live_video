@@ -410,6 +410,21 @@ void gfx_draw_icon(int cx, int cy, IconType icon, uint16_t color)
             gfx_fill_round_rect(cx - 2, cy, 4, 4, 2, color);
             break;
 
+        case ICON_RECORDER:
+            // Microphone capsule
+            gfx_fill_round_rect(cx - 5, cy - 11, 10, 15, 4, color);
+            // Mic inner accent / grille slit
+            gfx_fill_rect(cx - 3, cy - 6, 6, 2, COLOR_BLACK);
+            // Mic cradle arc (U-bracket)
+            gfx_fill_rect(cx - 8, cy - 3, 2, 8, color);
+            gfx_fill_rect(cx + 6, cy - 3, 2, 8, color);
+            gfx_fill_rect(cx - 8, cy + 5, 16, 2, color);
+            // Mic stand vertical stem
+            gfx_fill_rect(cx - 1, cy + 7, 2, 5, color);
+            // Mic stand base
+            gfx_fill_rect(cx - 6, cy + 12, 12, 2, color);
+            break;
+
         default:
             break;
     }

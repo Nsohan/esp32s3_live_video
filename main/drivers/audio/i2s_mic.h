@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 // ─── INMP441 I2S Microphone Pin Configuration (I2S_NUM_1, RX only) ───
@@ -23,6 +24,15 @@ esp_err_t i2s_mic_read(int16_t *dst, size_t samples, size_t *samples_read, uint3
 
 /** @brief Start a background task that logs the mic loudness (RMS) to serial. */
 void i2s_mic_start_level_monitor(void);
+
+/** @brief Stop the background mic loudness monitor task. */
+void i2s_mic_stop_level_monitor(void);
+
+/** @brief Check if background mic level monitor is currently running. */
+bool i2s_mic_is_level_monitor_running(void);
+
+/** @brief Get latest computed mic RMS level. */
+int i2s_mic_get_latest_rms(void);
 
 void i2s_mic_deinit(void);
 

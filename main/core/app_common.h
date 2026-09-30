@@ -19,7 +19,8 @@ typedef enum {
     STATE_PET_MOODS_VIEW,   // Emotions / Moods App
     STATE_WEB_STREAM_VIEW,  // Web Stream Info App
     STATE_MUSIC_VIEW,       // SD Music & Sound Player App
-    STATE_CALIBRATE_VIEW    // 24-Block Touch Calibration & Diagnostic App
+    STATE_CALIBRATE_VIEW,   // 24-Block Touch Calibration & Diagnostic App
+    STATE_RECORDER_VIEW     // Sound Recorder & Live Mic Monitor App
 } AppState;
 
 /**
