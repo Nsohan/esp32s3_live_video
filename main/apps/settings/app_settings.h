@@ -43,6 +43,16 @@ bool app_settings_handle_touch(int tx, int ty, AppState *next_state, bool *needs
  */
 uint32_t app_settings_get_screensaver_timeout_ms(void);
 
+/**
+ * @brief Check if Jarvis Wake Word detection is enabled
+ */
+bool app_settings_is_wake_word_enabled(void);
+
+/**
+ * @brief Enable or disable Jarvis Wake Word detection and persist to NVS
+ */
+void app_settings_set_wake_word_enabled(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

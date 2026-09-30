@@ -62,9 +62,13 @@ void app_main(void)
     i2s_mic_init();
 
     // 3c. Start Jarvis Wake Word Service in Background (Core 1)
-    ESP_LOGI(TAG, "Starting Jarvis Wake Word Service...");
     if (wake_word_service_init() == ESP_OK) {
-        wake_word_service_start();
+        if (app_settings_is_wake_word_enabled()) {
+            ESP_LOGI(TAG, "Starting Jarvis Wake Word Service (Core 1)...");
+            wake_word_service_start();
+        } else {
+            ESP_LOGI(TAG, "Jarvis Wake Word disabled in settings - Core 1 idle (0%% CPU)");
+        }
     } else {
         ESP_LOGW(TAG, "Wake word service init deferred or failed");
     }

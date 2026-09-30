@@ -27,10 +27,23 @@ esp_err_t audio_player_init(void);
 void audio_player_set_finish_callback(audio_player_finish_cb_t cb);
 
 /**
- * @brief Play an MP3 or WAV audio file asynchronously from SD Card or Flash
- * @param filepath Full POSIX path (e.g. "/sdcard/music/Aniket Prantor.mp3" or "/sdcard/sounds/confirm.mp3")
+ * @brief Play an MP3 or WAV audio file asynchronously from SD Card or Flash (triggers playlist finish callback)
+ * @param filepath Full POSIX path
  */
 esp_err_t audio_player_play_file(const char *filepath);
+
+/**
+ * @brief Play a one-shot sound effect at current master volume (does NOT trigger playlist finish callback)
+ * @param filepath Full POSIX path
+ */
+esp_err_t audio_player_play_sound_effect(const char *filepath);
+
+/**
+ * @brief Play a one-shot sound effect at a specific volume (does NOT trigger playlist finish callback)
+ * @param filepath Full POSIX path
+ * @param volume_percent Volume override (0 to 100), or -1 to use current volume
+ */
+esp_err_t audio_player_play_sound_effect_at_volume(const char *filepath, int volume_percent);
 
 /**
  * @brief Pause currently playing audio stream

@@ -12,8 +12,104 @@
 #include "audio_player.h"
 #include "roboeyes_display.h"
 #include "app_launcher.h"
+#include <dirent.h>
+#include <strings.h>
+#include "esp_random.h"
+#include "sdcard.h"
 
 static const char *TAG = "wake_word";
+
+#define WAKE_RESPONSE_DIR_PRIMARY   "/sdcard/sounds/wake_word_response_sound"
+#define WAKE_RESPONSE_DIR_ALT1      "/sdcard/wake_word_response_sound"
+#define WAKE_RESPONSE_DIR_ALT2      "/sdcard/sound/wake_word_response_sound"
+
+static char s_last_wake_sound[256] = "";
+
+static bool play_random_wake_response_sound(void)
+{
+    if (!sdcard_is_mounted()) {
+        ESP_LOGW(TAG, "SD card not mounted, cannot play wake word response sound");
+        return false;
+    }
+
+    const char *candidate_dirs[] = {
+        WAKE_RESPONSE_DIR_PRIMARY,
+        WAKE_RESPONSE_DIR_ALT1,
+        WAKE_RESPONSE_DIR_ALT2
+    };
+
+    const char *target_dir = NULL;
+    DIR *dir = NULL;
+
+    for (size_t i = 0; i < sizeof(candidate_dirs) / sizeof(candidate_dirs[0]); i++) {
+        dir = opendir(candidate_dirs[i]);
+        if (dir) {
+            target_dir = candidate_dirs[i];
+            break;
+        }
+    }
+
+    if (!dir || !target_dir) {
+        ESP_LOGW(TAG, "Wake response directory not found (searched '%s')", WAKE_RESPONSE_DIR_PRIMARY);
+        return false;
+    }
+
+    // Pass 1: Reservoir sampling choosing a random sound different from s_last_wake_sound
+    char chosen_path[512] = "";
+    char chosen_filename[256] = "";
+    int valid_file_count = 0;
+    int diff_file_count = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+
+        const char *ext = strrchr(entry->d_name, '.');
+        if (ext && (strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".wav") == 0)) {
+            valid_file_count++;
+
+            // Prefer files different from the last played track to avoid immediate repeat
+            if (s_last_wake_sound[0] == '\0' || strcmp(entry->d_name, s_last_wake_sound) != 0) {
+                diff_file_count++;
+                if ((esp_random() % diff_file_count) == 0) {
+                    snprintf(chosen_path, sizeof(chosen_path), "%s/%s", target_dir, entry->d_name);
+                    snprintf(chosen_filename, sizeof(chosen_filename), "%s", entry->d_name);
+                }
+            }
+        }
+    }
+
+    // If all valid files matched s_last_wake_sound (e.g. only 1 file in directory), fallback to it
+    if (diff_file_count == 0 && valid_file_count > 0) {
+        rewinddir(dir);
+        int fallback_count = 0;
+        while ((entry = readdir(dir)) != NULL) {
+            if (entry->d_name[0] == '.') continue;
+            const char *ext = strrchr(entry->d_name, '.');
+            if (ext && (strcasecmp(ext, ".mp3") == 0 || strcasecmp(ext, ".wav") == 0)) {
+                fallback_count++;
+                if ((esp_random() % fallback_count) == 0) {
+                    snprintf(chosen_path, sizeof(chosen_path), "%s/%s", target_dir, entry->d_name);
+                    snprintf(chosen_filename, sizeof(chosen_filename), "%s", entry->d_name);
+                }
+            }
+        }
+    }
+
+    closedir(dir);
+
+    if (chosen_path[0] != '\0') {
+        snprintf(s_last_wake_sound, sizeof(s_last_wake_sound), "%s", chosen_filename);
+
+        ESP_LOGI(TAG, "Playing wake response sound at FULL 100%% volume (%d available): '%s'",
+                 valid_file_count, chosen_path);
+        esp_err_t err = audio_player_play_sound_effect_at_volume(chosen_path, 100);
+        return (err == ESP_OK);
+    }
+
+    ESP_LOGW(TAG, "No .mp3 or .wav files found in '%s'", target_dir);
+    return false;
+}
 
 static srmodel_list_t *s_models = NULL;
 static const esp_wn_iface_t *s_wn = NULL;
@@ -127,12 +223,14 @@ void wake_word_service_stop(void)
 
 void wake_word_service_pause(void)
 {
+    if (!s_task_running) return;
     s_paused = true;
     ESP_LOGI(TAG, "Wake word listening paused");
 }
 
 void wake_word_service_resume(void)
 {
+    if (!s_task_running) return;
     s_paused = false;
     ESP_LOGI(TAG, "Wake word listening resumed");
 }
@@ -169,8 +267,9 @@ static void wake_word_task(void *arg)
     TickType_t last_trigger_tick = 0;
 
     while (s_task_running) {
-        if (s_paused) {
+        if (s_paused || audio_player_get_state() == AUDIO_STATE_PLAYING) {
             vTaskDelay(pdMS_TO_TICKS(50));
+            last_trigger_tick = xTaskGetTickCount();
             continue;
         }
 
@@ -194,8 +293,8 @@ static void wake_word_task(void *arg)
                          s_wake_word_name ? s_wake_word_name : "Jarvis");
                 ESP_LOGW(TAG, "**********************************************");
 
-                // 1. Play joyful pet reaction chime via MAX98357A speaker
-                audio_player_play_happy_sound();
+                // 1. Play random dynamic response sound from SD card (/sdcard/sounds/wake_word_response_sound)
+                play_random_wake_response_sound();
 
                 // 2. React on screen: if on App Menu, switch to RoboEyes view immediately
                 if (app_launcher_get_current_state() == STATE_APP_MENU) {

@@ -92,10 +92,17 @@ void app_music_play_prev(void)
 
 static void on_track_completed(void)
 {
-    ESP_LOGI(TAG, "Track finished naturally -> Auto playing next track...");
-    if (s_track_count > 0) {
-        app_music_play_next();
+    const char *current_track = audio_player_get_current_track_name();
+    if (!current_track || s_track_count <= 0) return;
+
+    // Only auto-advance if the audio that finished actually belongs to the music playlist
+    if (strcmp(current_track, s_playlist[s_selected_idx].name) != 0) {
+        ESP_LOGI(TAG, "Audio '%s' completed, but not active music playlist track -> ignoring auto-advance", current_track);
+        return;
     }
+
+    ESP_LOGI(TAG, "Track '%s' finished naturally -> Auto playing next track...", current_track);
+    app_music_play_next();
 }
 
 void app_music_init(void)

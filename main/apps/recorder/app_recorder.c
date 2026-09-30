@@ -589,7 +589,7 @@ bool app_recorder_handle_touch(int tx, int ty, AppState *next_state, bool *needs
 
                 if (sdcard_is_mounted()) {
                     ESP_LOGI(TAG, "Playing recording from SD card: %s", RECORDER_FILEPATH);
-                    audio_player_play_file(RECORDER_FILEPATH);
+                    audio_player_play_sound_effect(RECORDER_FILEPATH);
                 } else if (s_ram_buffer && s_ram_buffer_bytes > 0) {
                     ESP_LOGI(TAG, "Playing recording from RAM buffer (%zu bytes)", s_ram_buffer_bytes);
                     i2s_audio_set_params(I2S_MIC_SAMPLE_RATE, 16, 1);

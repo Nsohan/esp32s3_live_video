@@ -30,6 +30,8 @@ typedef enum {
 
 typedef struct {
     audio_cmd_type_t type;
+    bool trigger_finish_cb;
+    int force_volume; // -1 = current master volume, 0..100 = override volume
     char filepath[256];
 } audio_cmd_t;
 
@@ -272,12 +274,20 @@ static void audio_worker_task(void *pvParameters)
         if (xQueueReceive(s_audio_cmd_queue, &cmd, portMAX_DELAY) == pdTRUE) {
             switch (cmd.type) {
                 case CMD_PLAY_FILE: {
+                    int original_vol = i2s_audio_get_volume();
+                    if (cmd.force_volume >= 0 && cmd.force_volume <= 100) {
+                        i2s_audio_set_volume((uint8_t)cmd.force_volume);
+                    }
+
                     extract_filename(cmd.filepath, s_current_track_name, sizeof(s_current_track_name));
-                    ESP_LOGI(TAG, "Opening audio file: '%s'...", cmd.filepath);
+                    ESP_LOGI(TAG, "Opening audio file: '%s' (vol: %d%%)...", cmd.filepath, i2s_audio_get_volume());
 
                     FILE *f = fopen(cmd.filepath, "rb");
                     if (!f) {
                         ESP_LOGE(TAG, "Failed to open file: %s", cmd.filepath);
+                        if (cmd.force_volume >= 0) {
+                            i2s_audio_set_volume(original_vol);
+                        }
                         s_player_state = AUDIO_STATE_IDLE;
                         break;
                     }
@@ -296,7 +306,12 @@ static void audio_worker_task(void *pvParameters)
                     s_player_state = AUDIO_STATE_IDLE;
                     ESP_LOGI(TAG, "Finished playback of '%s' (completed=%d)", s_current_track_name, (int)completed);
 
-                    if (completed && s_finish_cb) {
+                    // Restore master volume if this was a volume-overridden playback
+                    if (cmd.force_volume >= 0) {
+                        i2s_audio_set_volume(original_vol);
+                    }
+
+                    if (completed && cmd.trigger_finish_cb && s_finish_cb) {
                         s_finish_cb();
                     }
                     break;
@@ -378,14 +393,41 @@ esp_err_t audio_player_play_file(const char *filepath)
 
     audio_cmd_t cmd = {
         .type = CMD_PLAY_FILE,
+        .trigger_finish_cb = true,
+        .force_volume = -1,
     };
     strncpy(cmd.filepath, filepath, sizeof(cmd.filepath) - 1);
+    cmd.filepath[sizeof(cmd.filepath) - 1] = '\0';
 
     // Stop current track and queue new one
     s_player_state = AUDIO_STATE_IDLE;
     xQueueReset(s_audio_cmd_queue);
     xQueueSend(s_audio_cmd_queue, &cmd, portMAX_DELAY);
     return ESP_OK;
+}
+
+esp_err_t audio_player_play_sound_effect_at_volume(const char *filepath, int volume_percent)
+{
+    if (!filepath || strlen(filepath) == 0) return ESP_ERR_INVALID_ARG;
+
+    audio_cmd_t cmd = {
+        .type = CMD_PLAY_FILE,
+        .trigger_finish_cb = false, // Sound effect: NEVER trigger playlist finish callback!
+        .force_volume = volume_percent,
+    };
+    strncpy(cmd.filepath, filepath, sizeof(cmd.filepath) - 1);
+    cmd.filepath[sizeof(cmd.filepath) - 1] = '\0';
+
+    // Stop current track and queue new one
+    s_player_state = AUDIO_STATE_IDLE;
+    xQueueReset(s_audio_cmd_queue);
+    xQueueSend(s_audio_cmd_queue, &cmd, portMAX_DELAY);
+    return ESP_OK;
+}
+
+esp_err_t audio_player_play_sound_effect(const char *filepath)
+{
+    return audio_player_play_sound_effect_at_volume(filepath, -1);
 }
 
 void audio_player_pause(void)
