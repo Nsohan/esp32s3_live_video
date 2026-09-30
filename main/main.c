@@ -49,18 +49,15 @@ void app_main(void)
     audio_player_init();
     audio_player_play_happy_sound(); // Play welcome startup chime
 
-    // 4. Start RoboEyes Background Engine Task (Core 1)
-    roboeyes_start_cycling_task();
-
-    // 5. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
+    // 4. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();
     app_launcher_set_wifi_info(WIFI_SSID, "Connecting...");
     app_launcher_start_task();
 
-    // 6. Initialize OV2640 Camera Driver
+    // 5. Initialize OV2640 Camera Driver
     ESP_ERROR_CHECK(camera_driver_init());
 
-    // 7. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
+    // 6. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
     wifi_service_init(WIFI_SSID, WIFI_PASSWORD);
 
     ESP_LOGI(TAG, "PetBot App Launcher UI & Audio System started instantly!");

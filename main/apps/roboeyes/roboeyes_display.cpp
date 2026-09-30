@@ -741,7 +741,7 @@ static void roboeyes_task(void *pvParameters) {
 
     while (1) {
         if (!s_roboeyes_active) {
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
@@ -854,21 +854,36 @@ static void roboeyes_task(void *pvParameters) {
     }
 }
 
+static TaskHandle_t s_roboeyes_task_handle = NULL;
+
 extern "C" void roboeyes_start_cycling_task(void) {
+    if (s_roboeyes_task_handle != NULL) {
+        s_roboeyes_active = true;
+        return;
+    }
+    s_roboeyes_active = true;
     xTaskCreatePinnedToCore(
         roboeyes_task,
         "roboeyes_task",
         8192,
         NULL,
         5,
-        NULL,
+        &s_roboeyes_task_handle,
         1
     );
-    ESP_LOGI(TAG, "Loona-Style RoboEyes background engine ready on Core 1!");
+    ESP_LOGI(TAG, "Loona-Style RoboEyes background engine started on Core 1!");
 }
 
 extern "C" void roboeyes_set_active(bool active) {
-    s_roboeyes_active = active;
+    if (active) {
+        if (s_roboeyes_task_handle == NULL) {
+            roboeyes_start_cycling_task();
+        } else {
+            s_roboeyes_active = true;
+        }
+    } else {
+        s_roboeyes_active = false;
+    }
 }
 
 extern "C" bool roboeyes_is_active(void) {
@@ -881,11 +896,11 @@ extern "C" void roboeyes_set_color(uint16_t color_rgb565) {
 
 extern "C" void roboeyes_trigger_mood(int mood_index) {
     s_requested_mood = mood_index;
-    s_roboeyes_active = true;
+    roboeyes_set_active(true);
 }
 
 extern "C" void roboeyes_trigger_music_mode(void) {
     s_requested_mood = MODE_MUSIC_LISTENING;
-    s_roboeyes_active = true;
+    roboeyes_set_active(true);
 }
 
