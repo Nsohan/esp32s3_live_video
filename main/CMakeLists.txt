@@ -23,6 +23,7 @@ idf_component_register(
         "apps/touch_test/app_touch_test.c"
         "apps/music/app_music.c"
         "apps/recorder/app_recorder.c"
+        "services/wake_word/wake_word_service.c"
     INCLUDE_DIRS
         "."
         "core"
@@ -36,6 +37,7 @@ idf_component_register(
         "services/wifi"
         "services/web_stream"
         "services/battery"
+        "services/wake_word"
         "apps/camera"
         "apps/roboeyes"
         "apps/settings"
@@ -66,4 +68,5 @@ idf_component_register(
         vfs
         espressif__esp32-camera
         espressif__esp_jpeg
+        espressif__esp-sr
 )

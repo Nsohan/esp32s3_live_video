@@ -21,6 +21,7 @@
 #include "audio_player.h"
 #include "wifi_service.h"
 #include "battery_service.h"
+#include "wake_word_service.h"
 
 static const char *TAG = "petbot_main";
 
@@ -57,8 +58,16 @@ void app_main(void)
     audio_player_play_happy_sound(); // Play welcome startup chime
     battery_service_init();
 
-    // 3b. INMP441 microphone (I2S_NUM_1) ready for Sound Recorder
+    // 3b. INMP441 microphone (I2S_NUM_1) ready for Sound Recorder & WakeNet
     i2s_mic_init();
+
+    // 3c. Start Jarvis Wake Word Service in Background (Core 1)
+    ESP_LOGI(TAG, "Starting Jarvis Wake Word Service...");
+    if (wake_word_service_init() == ESP_OK) {
+        wake_word_service_start();
+    } else {
+        ESP_LOGW(TAG, "Wake word service init deferred or failed");
+    }
 
     // 4. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();

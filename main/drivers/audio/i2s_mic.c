@@ -24,6 +24,7 @@ esp_err_t i2s_mic_init(void)
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num = 6;
     chan_cfg.dma_frame_num = 256;
+    chan_cfg.auto_clear_after_cb = true;
 
     esp_err_t ret = i2s_new_channel(&chan_cfg, NULL, &s_rx_chan);
     if (ret != ESP_OK) {
@@ -66,12 +67,16 @@ esp_err_t i2s_mic_init(void)
     return ESP_OK;
 }
 
+static float s_dc_filter_in_prev = 0.0f;
+static float s_dc_filter_out_prev = 0.0f;
+
 esp_err_t i2s_mic_read(int16_t *dst, size_t samples, size_t *samples_read, uint32_t timeout_ms)
 {
     if (!s_rx_chan) return ESP_ERR_INVALID_STATE;
 
     int32_t raw[256];
     size_t done = 0;
+    TickType_t ticks = (timeout_ms == portMAX_DELAY) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
 
     while (done < samples) {
         size_t want = samples - done;
@@ -79,13 +84,19 @@ esp_err_t i2s_mic_read(int16_t *dst, size_t samples, size_t *samples_read, uint3
 
         size_t bytes = 0;
         esp_err_t ret = i2s_channel_read(s_rx_chan, raw, want * sizeof(int32_t),
-                                         &bytes, timeout_ms);
+                                         &bytes, ticks);
         size_t got = bytes / sizeof(int32_t);
         for (size_t i = 0; i < got; i++) {
-            int32_t v = raw[i] >> MIC_SHIFT;
-            if (v > 32767) v = 32767;
-            if (v < -32768) v = -32768;
-            dst[done + i] = (int16_t)v;
+            float sample_in = (float)(raw[i] >> MIC_SHIFT);
+
+            // DC-blocking high-pass filter: eliminates DC thump / bias
+            float sample_filtered = sample_in - s_dc_filter_in_prev + 0.995f * s_dc_filter_out_prev;
+            s_dc_filter_in_prev = sample_in;
+            s_dc_filter_out_prev = sample_filtered;
+
+            if (sample_filtered > 32767.0f) sample_filtered = 32767.0f;
+            if (sample_filtered < -32768.0f) sample_filtered = -32768.0f;
+            dst[done + i] = (int16_t)sample_filtered;
         }
         done += got;
         if (ret != ESP_OK) {

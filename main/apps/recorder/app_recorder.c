@@ -15,6 +15,7 @@
 #include "i2s_audio.h"
 #include "audio_player.h"
 #include "sdcard.h"
+#include "wake_word_service.h"
 
 static const char *TAG = "app_recorder";
 
@@ -30,7 +31,8 @@ static const char *TAG = "app_recorder";
 typedef enum {
     MODE_IDLE,
     MODE_RECORDING,
-    MODE_PLAYING
+    MODE_PLAYING,
+    MODE_LIVE_VOICE
 } recorder_mode_t;
 
 typedef struct {
@@ -55,6 +57,10 @@ static volatile bool s_rec_running = false;
 static uint32_t s_rec_start_time_ms = 0;
 static uint32_t s_rec_elapsed_ms = 0;
 static uint32_t s_total_recorded_bytes = 0;
+
+static TaskHandle_t s_live_task_handle = NULL;
+static volatile bool s_live_running = false;
+static volatile int s_live_rms = 0;
 
 // RAM backup buffer if SD card is not present
 #define RAM_BUFFER_MAX_BYTES (320 * 1024) // 10 seconds of 16kHz 16-bit mono
@@ -184,6 +190,63 @@ static void recorder_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+#define LIVE_VOICE_GAIN  (1.0f) // Normal clean 1:1 gain, no artificial noise boost
+
+static void live_voice_task(void *arg)
+{
+    ESP_LOGI(TAG, "Live Voice Test started: Clean 1:1 Mic -> Speaker Loopback");
+    i2s_audio_set_params(I2S_MIC_SAMPLE_RATE, 16, 1);
+
+    int16_t in_buf[256];
+    int16_t out_buf[256];
+    int tick = 0;
+
+    while (s_live_running) {
+        size_t samples_read = 0;
+        esp_err_t err = i2s_mic_read(in_buf, 256, &samples_read, portMAX_DELAY);
+        if (err != ESP_OK || samples_read == 0) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        int64_t sum_squares = 0;
+        int32_t max_val = 0;
+
+        for (size_t i = 0; i < samples_read; i++) {
+            int16_t s = in_buf[i];
+            out_buf[i] = s;
+
+            sum_squares += (int64_t)s * s;
+            int32_t abs_s = abs(s);
+            if (abs_s > max_val) max_val = abs_s;
+        }
+
+        // Direct write to MAX98357A speaker
+        size_t bytes_to_write = samples_read * sizeof(int16_t);
+        size_t bytes_written = 0;
+        i2s_audio_write(out_buf, bytes_to_write, &bytes_written, 100);
+
+        // Compute RMS for live VU meter display
+        int rms = (int)sqrt((double)sum_squares / samples_read);
+        s_live_rms = rms;
+
+        if (++tick >= 16) {
+            tick = 0;
+            int bars = rms / 400;
+            if (bars > 30) bars = 30;
+            char meter[32];
+            memset(meter, '#', bars);
+            meter[bars] = 0;
+            ESP_LOGI("live_mic", "RMS %5d |%s", rms, meter);
+        }
+    }
+
+    s_live_rms = 0;
+    ESP_LOGI(TAG, "Live Voice Test stopped");
+    s_live_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
 void app_recorder_init(void)
 {
     ESP_LOGI(TAG, "Opening Sound Recorder App...");
@@ -207,6 +270,9 @@ void app_recorder_init(void)
         }
     }
 
+    // Pause wake word service so recorder gets exclusive mic access
+    wake_word_service_pause();
+
     // Start background live RMS monitor (serial logging active while in app)
     i2s_mic_start_level_monitor();
 }
@@ -223,6 +289,14 @@ void app_recorder_stop(void)
         }
     }
 
+    // Stop live voice test if running
+    if (s_live_running) {
+        s_live_running = false;
+        for (int i = 0; i < 30 && s_live_task_handle != NULL; i++) {
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+    }
+
     // Stop playback if playing
     if (s_mode == MODE_PLAYING) {
         audio_player_stop();
@@ -232,6 +306,9 @@ void app_recorder_stop(void)
 
     // Stop live mic level monitor (logging completely stops)
     i2s_mic_stop_level_monitor();
+
+    // Resume background wake word detection
+    wake_word_service_resume();
 }
 
 static void draw_vu_scale(void)
@@ -273,11 +350,18 @@ static void draw_action_buttons(void)
         gfx_draw_string_centered(113, 214, 94, "PLAY", text_col, COLOR_CARD_BG, 1);
     }
 
-    // Button 3: Right [ BEEP TEST ]
-    gfx_fill_round_rect(216, 180, 94, 48, 6, COLOR_CARD_BG);
-    gfx_draw_round_rect(216, 180, 94, 48, 6, COLOR_CARD_BORDER);
-    gfx_draw_string_centered(216, 192, 94, "*", COLOR_YELLOW_ACCENT, COLOR_CARD_BG, 2);
-    gfx_draw_string_centered(216, 214, 94, "TEST BEEP", COLOR_WHITE, COLOR_CARD_BG, 1);
+    // Button 3: Right [ LIVE VOICE TEST ]
+    if (s_mode == MODE_LIVE_VOICE) {
+        gfx_fill_round_rect(216, 180, 94, 48, 6, COLOR_CYAN_ACCENT);
+        gfx_draw_round_rect(216, 180, 94, 48, 6, COLOR_WHITE);
+        gfx_fill_rect(254, 192, 18, 18, COLOR_BLACK); // Stop Square
+        gfx_draw_string_centered(216, 214, 94, "STOP LIVE", COLOR_BLACK, COLOR_CYAN_ACCENT, 1);
+    } else {
+        gfx_fill_round_rect(216, 180, 94, 48, 6, COLOR_CARD_BG);
+        gfx_draw_round_rect(216, 180, 94, 48, 6, COLOR_CYAN_ACCENT);
+        gfx_draw_string_centered(216, 192, 94, "MIC > SPK", COLOR_CYAN_ACCENT, COLOR_CARD_BG, 1);
+        gfx_draw_string_centered(216, 214, 94, "LIVE VOICE", COLOR_WHITE, COLOR_CARD_BG, 1);
+    }
 }
 
 void app_recorder_draw(void)
@@ -356,13 +440,20 @@ void app_recorder_update(void)
             gfx_draw_string(34, 45, "REC", COLOR_RED_ACCENT, COLOR_CARD_BG, 1);
         } else if (s_mode == MODE_PLAYING) {
             gfx_draw_string(18, 45, "> PLAY", COLOR_GREEN_ACCENT, COLOR_CARD_BG, 1);
+        } else if (s_mode == MODE_LIVE_VOICE) {
+            uint16_t dot_color = blink ? COLOR_CYAN_ACCENT : COLOR_CARD_BG;
+            gfx_fill_round_rect(18, 44, 12, 12, 6, dot_color);
+            gfx_draw_string(34, 45, "LIVE", COLOR_CYAN_ACCENT, COLOR_CARD_BG, 1);
         } else {
             gfx_fill_round_rect(18, 44, 10, 10, 5, COLOR_CYAN_ACCENT);
             gfx_draw_string(32, 45, "READY", COLOR_CYAN_ACCENT, COLOR_CARD_BG, 1);
         }
 
         // Storage indicator
-        if (sdcard_is_mounted()) {
+        if (s_mode == MODE_LIVE_VOICE) {
+            gfx_draw_string(88, 38, "AUDIO LOOPBACK ACTIVE", COLOR_CYAN_ACCENT, COLOR_CARD_BG, 1);
+            gfx_draw_string(88, 52, "Mic Input -> Direct to Speaker", COLOR_WHITE, COLOR_CARD_BG, 1);
+        } else if (sdcard_is_mounted()) {
             gfx_draw_string(88, 38, "SD: /recordings/", COLOR_WHITE, COLOR_CARD_BG, 1);
             char sz_str[32];
             snprintf(sz_str, sizeof(sz_str), "rec_latest.wav (%lu KB)", (unsigned long)(s_total_recorded_bytes / 1024));
@@ -379,7 +470,7 @@ void app_recorder_update(void)
     }
 
     // 4. Live VU meter differential updates
-    int rms = i2s_mic_get_latest_rms();
+    int rms = (s_mode == MODE_LIVE_VOICE) ? s_live_rms : i2s_mic_get_latest_rms();
     if (s_mode == MODE_PLAYING) {
         rms = 0; // Mute VU during speaker playback
     }
@@ -452,6 +543,13 @@ bool app_recorder_handle_touch(int tx, int ty, AppState *next_state, bool *needs
                 draw_action_buttons();
                 i2s_mic_start_level_monitor(); // Resume monitor
             } else {
+                // If live voice is running, stop it first
+                if (s_mode == MODE_LIVE_VOICE) {
+                    s_live_running = false;
+                    for (int i = 0; i < 30 && s_live_task_handle != NULL; i++) {
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                }
                 // If currently playing, stop playback first
                 if (s_mode == MODE_PLAYING) {
                     audio_player_stop();
@@ -477,6 +575,12 @@ bool app_recorder_handle_touch(int tx, int ty, AppState *next_state, bool *needs
                 draw_action_buttons();
                 i2s_mic_start_level_monitor();
             } else if (s_has_recording) {
+                if (s_mode == MODE_LIVE_VOICE) {
+                    s_live_running = false;
+                    for (int i = 0; i < 30 && s_live_task_handle != NULL; i++) {
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                }
                 if (s_mode == MODE_RECORDING) {
                     s_rec_running = false;
                     vTaskDelay(pdMS_TO_TICKS(100));
@@ -499,9 +603,38 @@ bool app_recorder_handle_touch(int tx, int ty, AppState *next_state, bool *needs
             return true;
         }
 
-        // Button 3: Right [ TEST BEEP ]
+        // Button 3: Right [ LIVE VOICE TEST ]
         if (tx >= 216 && tx <= 310) {
-            audio_player_play_happy_sound();
+            audio_player_play_ui_click();
+            if (s_mode == MODE_LIVE_VOICE) {
+                // Stop live voice
+                s_live_running = false;
+                for (int i = 0; i < 30 && s_live_task_handle != NULL; i++) {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                s_mode = MODE_IDLE;
+                draw_action_buttons();
+                i2s_mic_start_level_monitor();
+            } else {
+                // Stop recording if active
+                if (s_mode == MODE_RECORDING) {
+                    s_rec_running = false;
+                    for (int i = 0; i < 30 && s_rec_task_handle != NULL; i++) {
+                        vTaskDelay(pdMS_TO_TICKS(10));
+                    }
+                }
+                // Stop playback if active
+                if (s_mode == MODE_PLAYING) {
+                    audio_player_stop();
+                }
+                // Stop level monitor to give live voice exclusive access to mic
+                i2s_mic_stop_level_monitor();
+
+                s_mode = MODE_LIVE_VOICE;
+                s_live_running = true;
+                xTaskCreatePinnedToCore(live_voice_task, "live_voice", 4096, NULL, 5, &s_live_task_handle, 1);
+                draw_action_buttons();
+            }
             return true;
         }
     }

@@ -429,6 +429,13 @@ AppState app_launcher_get_current_state(void)
 
 void app_launcher_switch_state(AppState new_state)
 {
+    if (s_current_state == STATE_RECORDER_VIEW && new_state != STATE_RECORDER_VIEW) {
+        app_recorder_stop();
+    }
     s_current_state = new_state;
     s_state_needs_redraw = true;
+
+    if (s_current_state == STATE_ROBOEYES_VIEW) {
+        roboeyes_set_active(true);
+    }
 }
