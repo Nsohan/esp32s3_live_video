@@ -46,15 +46,21 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
         ESP_LOGW(TAG, "WiFi disconnected, reason: %d", disconn ? disconn->reason : -1);
+        bool was_connected = s_is_connected;
         s_is_connected = false;
-        snprintf(s_current_ip, sizeof(s_current_ip), "Disconnected");
-        app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
 
         if (s_retry_num < MAX_RETRY) {
-            esp_wifi_connect();
             s_retry_num++;
             ESP_LOGI(TAG, "Retrying WiFi connection (%d/%d)...", s_retry_num, MAX_RETRY);
+            esp_wifi_connect();
+            if (was_connected) {
+                snprintf(s_current_ip, sizeof(s_current_ip), "Reconnecting...");
+                app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
+            }
         } else {
+            ESP_LOGW(TAG, "WiFi connection failed after %d attempts", MAX_RETRY);
+            snprintf(s_current_ip, sizeof(s_current_ip), "Disconnected");
+            app_launcher_set_wifi_info(s_saved_ssid, s_current_ip);
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {

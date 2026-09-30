@@ -32,6 +32,7 @@ static char s_wifi_ssid[32] = "Not Connected";
 static char s_wifi_ip[32] = "0.0.0.0";
 static AppState s_current_state = STATE_APP_MENU;
 static bool s_state_needs_redraw = true;
+static volatile bool s_status_bar_needs_update = false;
 
 // ─── App Drawer Pagination & Grid Definition ─────────────
 #define TOTAL_PAGES 2
@@ -325,9 +326,10 @@ static void app_launcher_task(void *pvParameters)
             app_recorder_update();
         } else if (s_current_state == STATE_APP_MENU) {
             static uint32_t last_status_bar_tick = 0;
-            if (now - last_status_bar_tick >= 1000) {
+            if (now - last_status_bar_tick >= 1000 || s_status_bar_needs_update) {
                 app_common_draw_status_bar(false);
                 last_status_bar_tick = now;
+                s_status_bar_needs_update = false;
             }
         }
 
@@ -395,9 +397,29 @@ void app_launcher_start_task(void)
 
 void app_launcher_set_wifi_info(const char *ssid, const char *ip)
 {
-    if (ssid) strncpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid) - 1);
-    if (ip) strncpy(s_wifi_ip, ip, sizeof(s_wifi_ip) - 1);
-    s_state_needs_redraw = true;
+    bool changed = false;
+    if (ssid && strcmp(s_wifi_ssid, ssid) != 0) {
+        strncpy(s_wifi_ssid, ssid, sizeof(s_wifi_ssid) - 1);
+        s_wifi_ssid[sizeof(s_wifi_ssid) - 1] = '\0';
+        changed = true;
+    }
+    if (ip && strcmp(s_wifi_ip, ip) != 0) {
+        strncpy(s_wifi_ip, ip, sizeof(s_wifi_ip) - 1);
+        s_wifi_ip[sizeof(s_wifi_ip) - 1] = '\0';
+        changed = true;
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    // Only views that actually render the SSID or IP text directly need a full redraw
+    if (s_current_state == STATE_SYSINFO_VIEW || s_current_state == STATE_WEB_STREAM_VIEW) {
+        s_state_needs_redraw = true;
+    } else if (s_current_state == STATE_APP_MENU) {
+        // App Menu only needs the status bar at the top updated - NEVER reload the full screen!
+        s_status_bar_needs_update = true;
+    }
 }
 
 AppState app_launcher_get_current_state(void)
