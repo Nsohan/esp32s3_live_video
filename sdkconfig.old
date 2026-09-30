@@ -1053,7 +1053,9 @@ CONFIG_SR_VADN_WEBRTC=y
 # CONFIG_SR_WN_WN9L_NIHAOXIAOZHI_TTS3 is not set
 # default:
 # CONFIG_SR_WN_WN9_ALEXA is not set
-CONFIG_SR_WN_WN9_JARVIS_TTS=y
+# default:
+# CONFIG_SR_WN_WN9_JARVIS_TTS is not set
+# default:
 # CONFIG_SR_WN_WN9_COMPUTER_TTS is not set
 # default:
 # CONFIG_SR_WN_WN9_HEYWILLOW_TTS is not set
