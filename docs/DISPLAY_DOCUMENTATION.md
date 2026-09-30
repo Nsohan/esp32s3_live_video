@@ -131,9 +131,9 @@ Using the ESP-IDF PowerShell environment:
 # 1. Build project
 idf.py build
 
-# 2. Flash to ESP32-S3 (replace COM7 with your port)
-idf.py -p COM7 flash
+# 2. Flash to ESP32-S3 (replace COM3 with your port)
+idf.py -p COM3 flash
 
 # 3. View real-time serial logs & stream IP address
-idf.py -p COM7 monitor
+idf.py -p COM3 monitor
 ```
