@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_camera.h"
+#include "camera_driver.h"
 #include "jpeg_decoder.h"
 #include "display.h"
 #include "display_gfx.h"
@@ -23,6 +24,13 @@ static uint32_t s_fps_timer = 0;
 
 void app_camera_init(void)
 {
+    if (!camera_driver_is_initialized()) {
+        esp_err_t err = camera_driver_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to initialize camera sensor: 0x%x", err);
+        }
+    }
+
     if (!s_cam_framebuffer) {
         size_t fb_size = LCD_H_RES * LCD_V_RES * sizeof(uint16_t);
         s_cam_framebuffer = (uint16_t *)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -82,6 +90,13 @@ static void draw_hud_string_be(int x, int y, const char *str, uint16_t color_be)
 // ─── Camera Viewfinder Render Cycle ───────────────────────
 void app_camera_update(void)
 {
+    if (!camera_driver_is_initialized()) {
+        if (camera_driver_init() != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            return;
+        }
+    }
+
     if (!s_cam_framebuffer) {
         app_camera_init();
         if (!s_cam_framebuffer) return;

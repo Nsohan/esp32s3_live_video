@@ -54,10 +54,7 @@ void app_main(void)
     app_launcher_set_wifi_info(WIFI_SSID, "Connecting...");
     app_launcher_start_task();
 
-    // 5. Initialize OV2640 Camera Driver
-    ESP_ERROR_CHECK(camera_driver_init());
-
-    // 6. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
+    // 5. Connect WiFi in Background (Non-blocking) & start HTTP MJPEG server
     wifi_service_init(WIFI_SSID, WIFI_PASSWORD);
 
     ESP_LOGI(TAG, "PetBot App Launcher UI & Audio System started instantly!");

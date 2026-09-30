@@ -31,6 +31,12 @@ extern "C" {
  */
 esp_err_t camera_driver_init(void);
 
+/**
+ * @brief Check if camera driver has already been initialized
+ * @return true if initialized, false otherwise
+ */
+bool camera_driver_is_initialized(void);
+
 #ifdef __cplusplus
 }
 #endif

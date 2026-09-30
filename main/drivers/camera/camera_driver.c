@@ -2,9 +2,19 @@
 #include "esp_log.h"
 
 static const char *TAG = "camera_driver";
+static bool s_cam_initialized = false;
+
+bool camera_driver_is_initialized(void)
+{
+    return s_cam_initialized;
+}
 
 esp_err_t camera_driver_init(void)
 {
+    if (s_cam_initialized) {
+        return ESP_OK;
+    }
+
     camera_config_t config = {
         .pin_pwdn = CAM_PIN_PWDN,
         .pin_reset = CAM_PIN_RESET,
@@ -66,6 +76,7 @@ esp_err_t camera_driver_init(void)
         s->set_colorbar(s, 0);         // Test colorbar OFF
     }
 
+    s_cam_initialized = true;
     ESP_LOGI(TAG, "Camera driver initialized: QVGA (320x240) with Auto-Exposure & Auto-Gain!");
     return ESP_OK;
 }

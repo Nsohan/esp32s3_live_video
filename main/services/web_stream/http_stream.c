@@ -1,6 +1,7 @@
 #include "http_stream.h"
 #include "esp_http_server.h"
 #include "esp_camera.h"
+#include "camera_driver.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -14,6 +15,17 @@ static volatile bool streaming_enabled = true;
 
 static esp_err_t stream_handler(httpd_req_t *req)
 {
+    if (!camera_driver_is_initialized()) {
+        esp_err_t cerr = camera_driver_init();
+        if (cerr != ESP_OK) {
+            ESP_LOGE(TAG, "Camera lazy init failed for stream: 0x%x", cerr);
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_send(req, "503: Camera hardware unavailable or failed to initialize", HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+    }
+
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
     char part_buf[160];
@@ -102,6 +114,17 @@ static esp_err_t control_handler(httpd_req_t *req)
 // Capture single frame
 static esp_err_t capture_handler(httpd_req_t *req)
 {
+    if (!camera_driver_is_initialized()) {
+        esp_err_t cerr = camera_driver_init();
+        if (cerr != ESP_OK) {
+            ESP_LOGE(TAG, "Camera lazy init failed for capture: 0x%x", cerr);
+            httpd_resp_set_status(req, "503 Service Unavailable");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_send(req, "503: Camera hardware unavailable or failed to initialize", HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+    }
+
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to capture frame");
