@@ -9,6 +9,7 @@
 #include "freertos/queue.h"
 #include "i2s_audio.h"
 #include "sdcard.h"
+#include "app_settings.h"
 
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3.h"
@@ -430,6 +431,7 @@ const char* audio_player_get_current_track_name(void)
 void audio_player_set_volume(uint8_t volume)
 {
     i2s_audio_set_volume(volume);
+    app_settings_save_volume(volume);
 }
 
 uint8_t audio_player_get_volume(void)

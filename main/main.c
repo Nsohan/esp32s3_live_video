@@ -15,6 +15,7 @@
 
 // Apps
 #include "roboeyes_display.h"
+#include "app_settings.h"
 
 // Services & Audio
 #include "audio_player.h"
@@ -33,6 +34,10 @@ void app_main(void)
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "        PETBOT EMBEDDED SYSTEM          ");
     ESP_LOGI(TAG, "========================================");
+
+    // 0. Initialize Non-Volatile Storage (NVS) & Load Saved Settings
+    ESP_LOGI(TAG, "Loading persistent user settings from NVS Flash...");
+    app_settings_init();
 
     // 1. Initialize 2.4" TFT ILI9341 Display
     ESP_LOGI(TAG, "Initializing 2.4\" TFT Display (ILI9341)...");

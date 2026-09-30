@@ -40,11 +40,6 @@ void roboeyes_set_active(bool active);
 bool roboeyes_is_active(void);
 
 /**
- * @brief Set eye primary color (RGB565)
- */
-void roboeyes_set_color(uint16_t color_rgb565);
-
-/**
  * @brief Trigger a specific mood immediately
  */
 void roboeyes_trigger_mood(int mood_index);

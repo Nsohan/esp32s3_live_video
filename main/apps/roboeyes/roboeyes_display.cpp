@@ -709,7 +709,6 @@ static void apply_mode(EyeMode mode, RoboEyes<ESP_ILI9341_Display> &eyes, ESP_IL
 }
 
 static volatile bool s_roboeyes_active = false;
-static volatile uint16_t s_eye_color_be = SWAP_BYTES(COLOR_YELLOW);
 static volatile int s_requested_mood = -1;
 
 // ─── FreeRTOS Background Eye Animation Task ───────────────
@@ -888,10 +887,6 @@ extern "C" void roboeyes_set_active(bool active) {
 
 extern "C" bool roboeyes_is_active(void) {
     return s_roboeyes_active;
-}
-
-extern "C" void roboeyes_set_color(uint16_t color_rgb565) {
-    s_eye_color_be = SWAP_BYTES(color_rgb565);
 }
 
 extern "C" void roboeyes_trigger_mood(int mood_index) {
