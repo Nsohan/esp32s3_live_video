@@ -9,6 +9,7 @@ idf_component_register(
         "drivers/gfx/display_gfx.c"
         "drivers/storage/sdcard.c"
         "drivers/audio/i2s_audio.c"
+        "drivers/audio/i2s_mic.c"
         "services/audio_player/audio_player.c"
         "services/wifi/wifi_service.c"
         "services/web_stream/http_stream.c"

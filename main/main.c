@@ -11,6 +11,7 @@
 #include "camera_driver.h"
 #include "sdcard.h"
 #include "i2s_audio.h"
+#include "i2s_mic.h"
 
 // Apps
 #include "roboeyes_display.h"
@@ -45,11 +46,16 @@ void app_main(void)
     ESP_LOGI(TAG, "Initializing MicroSD Card on Display SPI bus...");
     sdcard_init();
 
-    // 3. Initialize I2S Audio Player Service (MAX98357A on GPIO 0, 48, 21) & Battery Monitor
+    // 3. Initialize I2S Audio Player Service (MAX98357A) & Battery Monitor
     ESP_LOGI(TAG, "Initializing Audio Player Service...");
     audio_player_init();
     audio_player_play_happy_sound(); // Play welcome startup chime
     battery_service_init();
+
+    // 3b. INMP441 microphone (I2S_NUM_1) + serial loudness monitor (test only)
+    if (i2s_mic_init() == ESP_OK) {
+        i2s_mic_start_level_monitor();
+    }
 
     // 4. Start Interactive Smartphone App Launcher & Touch Navigation (Core 0)
     app_launcher_init();

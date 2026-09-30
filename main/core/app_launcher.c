@@ -74,8 +74,8 @@ static void draw_home_menu_screen(void)
 {
     display_fill_screen(0x0000);
 
-    // Modern Smartphone-Style Status Bar
-    app_common_draw_status_bar();
+    // Modern Smartphone-Style Status Bar (force redraw on screen draw)
+    app_common_draw_status_bar(true);
 
     // Draw all App Tiles in the Grid
     for (size_t i = 0; i < MENU_ITEM_COUNT; i++) {
@@ -230,7 +230,7 @@ static void app_launcher_task(void *pvParameters)
         } else if (s_current_state == STATE_APP_MENU) {
             static uint32_t last_status_bar_tick = 0;
             if (now - last_status_bar_tick >= 1000) {
-                app_common_draw_status_bar();
+                app_common_draw_status_bar(false);
                 last_status_bar_tick = now;
             }
         }

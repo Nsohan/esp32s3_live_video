@@ -30,8 +30,9 @@ void app_common_draw_header(const char *title);
 
 /**
  * @brief Draw modern smartphone-style status bar (notifications on left, time in middle, wifi & battery on right)
+ * @param force_redraw If true, forces a full redraw even if states haven't changed
  */
-void app_common_draw_status_bar(void);
+void app_common_draw_status_bar(bool force_redraw);
 
 /**
  * @brief Check if the [BACK] button area was pressed (Top-Left: X <= 70, Y <= 30)
