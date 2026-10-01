@@ -96,6 +96,11 @@ void audio_player_play_ui_click(void);
 void audio_player_play_happy_sound(void);
 
 /**
+ * @brief Play curious inquisitive pet head-tilt chirp ("N? Are?" tone)
+ */
+void audio_player_play_curious_sound(void);
+
+/**
  * @brief Play continuous 1000Hz test tone for speaker testing
  */
 void audio_player_play_test_tone(void);

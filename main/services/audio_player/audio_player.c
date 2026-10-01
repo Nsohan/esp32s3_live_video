@@ -25,6 +25,7 @@ typedef enum {
     CMD_STOP,
     CMD_PLAY_CLICK,
     CMD_PLAY_HAPPY,
+    CMD_PLAY_CURIOUS,
     CMD_PLAY_TEST_TONE
 } audio_cmd_type_t;
 
@@ -330,6 +331,15 @@ static void audio_worker_task(void *pvParameters)
                     i2s_audio_play_beep(1760, 120);
                     break;
 
+                case CMD_PLAY_CURIOUS:
+                    // Curious inquisitive head-tilt tone ("N? Are?" upward glide)
+                    i2s_audio_play_beep(587, 70);
+                    vTaskDelay(pdMS_TO_TICKS(25));
+                    i2s_audio_play_beep(880, 85);
+                    vTaskDelay(pdMS_TO_TICKS(15));
+                    i2s_audio_play_beep(1318, 140);
+                    break;
+
                 case CMD_PLAY_TEST_TONE:
                     ESP_LOGI(TAG, "Playing 1kHz test tone (1.0 sec)...");
                     i2s_audio_play_beep(1000, 1000);
@@ -492,6 +502,33 @@ void audio_player_play_happy_sound(void)
 {
     if (s_player_state == AUDIO_STATE_PLAYING) return;
     audio_cmd_t cmd = {.type = CMD_PLAY_HAPPY};
+    xQueueSend(s_audio_cmd_queue, &cmd, 0);
+}
+
+void audio_player_play_curious_sound(void)
+{
+    if (s_player_state == AUDIO_STATE_PLAYING) return;
+
+    // Check if an explicit mascot voice file exists on SD card
+    const char *candidates[] = {
+        "/sdcard/sounds/wake_word_response_sound/method1_curious_eh.wav",
+        "/sdcard/wake_word_response_sound/method1_curious_eh.wav",
+        "/sdcard/sounds/curious.wav",
+        "/sdcard/sounds/wake_word_response_sound/aaa.mp3",
+        "/sdcard/wake_word_response_sound/aaa.mp3"
+    };
+    for (int i = 0; i < 5; i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (f) {
+            fclose(f);
+            ESP_LOGI(TAG, "Playing curious sound from file: %s", candidates[i]);
+            audio_player_play_sound_effect(candidates[i]);
+            return;
+        }
+    }
+
+    // Fallback: synthesized curious mascot head-tilt chirp
+    audio_cmd_t cmd = {.type = CMD_PLAY_CURIOUS};
     xQueueSend(s_audio_cmd_queue, &cmd, 0);
 }
 

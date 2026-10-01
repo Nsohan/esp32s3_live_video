@@ -152,10 +152,34 @@ static esp_err_t capture_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-// TTS Speech POST endpoint
+// Direct Raw PCM playback endpoint (/api/play_pcm?rate=16000)
+static esp_err_t play_pcm_handler(httpd_req_t *req)
+{
+    char query[64];
+    int rate = 16000;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char rstr[16];
+        if (httpd_query_key_value(query, "rate", rstr, sizeof(rstr)) == ESP_OK) {
+            rate = atoi(rstr);
+            if (rate < 8000 || rate > 48000) rate = 16000;
+        }
+    }
+
+    char buf[1024];
+    int ret;
+    while ((ret = httpd_req_recv(req, buf, sizeof(buf))) > 0) {
+        tts_play_pcm(buf, (size_t)ret, (uint32_t)rate);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"status\":\"ok\"}", 15);
+}
+
+// TTS Speech POST endpoint (supports engine="cloud"|"sam", lang="en"|"es"|"fr"|"ja"|"de", preset=0..6)
 static esp_err_t speak_post_handler(httpd_req_t *req)
 {
-    char buf[300];
+    char buf[350];
     int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (ret <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty request");
@@ -165,8 +189,30 @@ static esp_err_t speak_post_handler(httpd_req_t *req)
 
     char speak_text[160] = {0};
 
-    // Parse preset
-    int preset = 0;
+    // Parse engine: cloud vs sam
+    tts_mode_t mode = TTS_MODE_CLOUD_NATURAL;
+    char *engine_key = strstr(buf, "\"engine\":");
+    if (engine_key && strstr(engine_key, "\"sam\"")) {
+        mode = TTS_MODE_OFFLINE_SAM;
+    }
+
+    // Parse language for cloud speech
+    char lang[16] = "en";
+    char *lang_key = strstr(buf, "\"lang\":");
+    if (lang_key) {
+        char *start = strchr(lang_key + 7, '\"');
+        if (start) {
+            start++;
+            char *end = strchr(start, '\"');
+            if (end && (end - start < (int)sizeof(lang))) {
+                memcpy(lang, start, end - start);
+                lang[end - start] = '\0';
+            }
+        }
+    }
+
+    // Parse preset for SAM offline synth
+    int preset = 4; // Loona / Mascot default
     char *preset_key = strstr(buf, "\"preset\":");
     if (preset_key) {
         preset = atoi(preset_key + 9);
@@ -200,8 +246,9 @@ static esp_err_t speak_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Web TTS speak request: '%s' (preset %d)", speak_text, preset);
-    tts_speak(speak_text);
+    ESP_LOGI(TAG, "Web TTS speak request: '%s' (mode=%s, lang=%s, preset=%d)",
+             speak_text, (mode == TTS_MODE_CLOUD_NATURAL) ? "cloud" : "sam", lang, preset);
+    tts_speak_mode(speak_text, mode, lang);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -209,7 +256,7 @@ static esp_err_t speak_post_handler(httpd_req_t *req)
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
-// TTS Speech GET endpoint (?text=hello)
+// TTS Speech GET endpoint (?text=hello&engine=cloud|sam&lang=en)
 static esp_err_t speak_get_handler(httpd_req_t *req)
 {
     char query[256];
@@ -219,8 +266,16 @@ static esp_err_t speak_get_handler(httpd_req_t *req)
             for (char *p = param; *p; p++) {
                 if (*p == '+') *p = ' ';
             }
-            ESP_LOGI(TAG, "Web GET TTS request: '%s'", param);
-            tts_speak(param);
+            tts_mode_t mode = TTS_MODE_CLOUD_NATURAL;
+            char eng[16];
+            if (httpd_query_key_value(query, "engine", eng, sizeof(eng)) == ESP_OK && strcmp(eng, "sam") == 0) {
+                mode = TTS_MODE_OFFLINE_SAM;
+            }
+            char lang[16] = "en";
+            httpd_query_key_value(query, "lang", lang, sizeof(lang));
+
+            ESP_LOGI(TAG, "Web GET TTS request: '%s' (%s, %s)", param, mode == TTS_MODE_CLOUD_NATURAL ? "cloud" : "sam", lang);
+            tts_speak_mode(param, mode, lang);
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
             return httpd_resp_send(req, "{\"status\":\"ok\"}", strlen("{\"status\":\"ok\"}"));
@@ -259,6 +314,8 @@ static esp_err_t fx_handler(httpd_req_t *req)
                 audio_player_play_ui_click();
             } else if (strcmp(sound, "tone") == 0) {
                 audio_player_play_test_tone();
+            } else if (strcmp(sound, "curious") == 0) {
+                audio_player_play_curious_sound();
             }
         }
     }
@@ -458,48 +515,104 @@ static esp_err_t index_handler(httpd_req_t *req)
         "        button:hover { filter: brightness(1.1); transform: translateY(-1px); }"
         "        .btn-stop { background: #ef4444; color: #450a0a; }"
         "        .btn-cap { background: #38bdf8; color: #082f49; }"
-        "        /* Voice Section */"
-        "        .voice-body {"
-        "            padding: 18px 20px;"
-        "            display: flex;"
-        "            flex-direction: column;"
-        "            gap: 14px;"
-        "        }"
-        "        .input-row {"
-        "            display: flex;"
-        "            gap: 8px;"
-        "            align-items: center;"
-        "            flex-wrap: wrap;"
-        "        }"
-        "        .text-wrap { flex: 1; min-width: 200px; }"
-        "        #tts-input {"
-        "            width: 100%;"
-        "            padding: 10px 14px;"
-        "            background: #0f172a;"
-        "            border: 1px solid #475569;"
-        "            border-radius: 8px;"
-        "            color: #f8fafc;"
-        "            font-size: 14px;"
-        "            outline: none;"
-        "        }"
-        "        #tts-input:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,0.25); }"
-        "        #voice-select {"
-        "            padding: 10px 10px;"
-        "            background: #0f172a;"
-        "            border: 1px solid #475569;"
-        "            border-radius: 8px;"
-        "            color: #e2e8f0;"
-        "            font-size: 13px;"
-        "            outline: none;"
-        "            cursor: pointer;"
-        "        }"
-        "        .btn-speak {"
-        "            background: linear-gradient(135deg, #0284c7, #2563eb);"
-        "            color: #fff;"
-        "            padding: 10px 22px;"
-        "            white-space: nowrap;"
-        "        }"
-        "        .btn-speak:disabled { opacity: 0.5; cursor: not-allowed; }"
+        "        /* Voice Section */\n"
+        "        .voice-body {\n"
+        "            padding: 18px 20px;\n"
+        "            display: flex;\n"
+        "            flex-direction: column;\n"
+        "            gap: 14px;\n"
+        "        }\n"
+        "        .vtabs {\n"
+        "            display: flex;\n"
+        "            gap: 6px;\n"
+        "            background: #0f172a;\n"
+        "            padding: 4px;\n"
+        "            border-radius: 10px;\n"
+        "            border: 1px solid #334155;\n"
+        "        }\n"
+        "        .vtab {\n"
+        "            flex: 1;\n"
+        "            padding: 8px 10px;\n"
+        "            font-size: 12px;\n"
+        "            font-weight: 600;\n"
+        "            border-radius: 6px;\n"
+        "            background: transparent;\n"
+        "            color: #94a3b8;\n"
+        "            border: none;\n"
+        "            cursor: pointer;\n"
+        "            transition: all 0.2s ease;\n"
+        "            text-align: center;\n"
+        "        }\n"
+        "        .vtab.active {\n"
+        "            background: #2563eb;\n"
+        "            color: #ffffff;\n"
+        "            box-shadow: 0 2px 8px rgba(37,99,235,0.4);\n"
+        "        }\n"
+        "        .input-row {\n"
+        "            display: flex;\n"
+        "            gap: 8px;\n"
+        "            align-items: center;\n"
+        "            flex-wrap: wrap;\n"
+        "        }\n"
+        "        .text-wrap { flex: 1; min-width: 200px; }\n"
+        "        #tts-input {\n"
+        "            width: 100%;\n"
+        "            padding: 10px 14px;\n"
+        "            background: #0f172a;\n"
+        "            border: 1px solid #475569;\n"
+        "            border-radius: 8px;\n"
+        "            color: #f8fafc;\n"
+        "            font-size: 14px;\n"
+        "            outline: none;\n"
+        "        }\n"
+        "        #tts-input:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,0.25); }\n"
+        "        .voice-sel {\n"
+        "            padding: 10px 10px;\n"
+        "            background: #0f172a;\n"
+        "            border: 1px solid #475569;\n"
+        "            border-radius: 8px;\n"
+        "            color: #e2e8f0;\n"
+        "            font-size: 13px;\n"
+        "            outline: none;\n"
+        "            cursor: pointer;\n"
+        "        }\n"
+        "        .btn-speak {\n"
+        "            background: linear-gradient(135deg, #0284c7, #2563eb);\n"
+        "            color: #fff;\n"
+        "            padding: 10px 22px;\n"
+        "            white-space: nowrap;\n"
+        "        }\n"
+        "        .btn-speak:disabled { opacity: 0.5; cursor: not-allowed; }\n"
+        "        .mic-box {\n"
+        "            display: none;\n"
+        "            flex-direction: column;\n"
+        "            align-items: center;\n"
+        "            gap: 12px;\n"
+        "            padding: 10px 0;\n"
+        "        }\n"
+        "        .btn-ptt {\n"
+        "            width: 100%;\n"
+        "            max-width: 320px;\n"
+        "            padding: 16px 24px;\n"
+        "            font-size: 15px;\n"
+        "            font-weight: 700;\n"
+        "            border-radius: 12px;\n"
+        "            background: linear-gradient(135deg, #0284c7, #2563eb);\n"
+        "            color: white;\n"
+        "            cursor: pointer;\n"
+        "            border: none;\n"
+        "            box-shadow: 0 4px 14px rgba(37,99,235,0.35);\n"
+        "            user-select: none;\n"
+        "            touch-action: none;\n"
+        "            transition: all 0.2s ease;\n"
+        "        }\n"
+        "        .btn-ptt.active {\n"
+        "            background: linear-gradient(135deg, #dc2626, #b91c1c);\n"
+        "            box-shadow: 0 0 20px rgba(220,38,38,0.7);\n"
+        "            animation: pttPulse 0.8s infinite alternate;\n"
+        "        }\n"
+        "        @keyframes pttPulse { from { transform: scale(0.98); } to { transform: scale(1.02); } }\n"
+        "        .mic-note { font-size: 12px; color: #94a3b8; text-align: center; }\n"
         "        .chips {"
         "            display: flex;"
         "            align-items: center;"
@@ -577,15 +690,37 @@ static esp_err_t index_handler(httpd_req_t *req)
         "        <!-- Voice Synthesizer Card -->\n"
         "        <div class='card'>\n"
         "            <div class='card-header'>\n"
-        "                <div class='card-title'>🗣️ PetBot Speaker Voice (Offline TTS)</div>\n"
+        "                <div class='card-title'>🗣️ PetBot Speaker Voice</div>\n"
         "                <span id='tts-badge' class='badge badge-off'>Ready</span>\n"
         "            </div>\n"
         "            <div class='voice-body'>\n"
-        "                <div class='input-row'>\n"
+        "                <!-- Voice Engine Tabs -->\n"
+        "                <div class='vtabs'>\n"
+        "                    <button class='vtab active' id='tab-cloud' onclick='window.switchVoiceEngine(\"cloud\")'>☁️ Cloud Natural</button>\n"
+        "                    <button class='vtab' id='tab-sam' onclick='window.switchVoiceEngine(\"sam\")'>🤖 Offline SAM</button>\n"
+        "                    <button class='vtab' id='tab-mic' onclick='window.switchVoiceEngine(\"mic\")'>🎙️ Walkie-Talkie</button>\n"
+        "                </div>\n"
+        "                <!-- Text Speak Panel -->\n"
+        "                <div id='text-speak-panel' class='input-row'>\n"
         "                    <div class='text-wrap'>\n"
         "                        <input type='text' id='tts-input' placeholder='Type something for PetBot to say...' maxlength='100' autocomplete='off'>\n"
         "                    </div>\n"
-        "                    <select id='voice-select'>\n"
+        "                    <!-- Cloud Language Select -->\n"
+        "                    <select id='cloud-lang-select' class='voice-sel'>\n"
+        "                        <option value='en-female' selected>🇺🇸 US English (Female)</option>\n"
+        "                        <option value='en-male'>🇺🇸 US English (Male)</option>\n"
+        "                        <option value='bn-female'>🇧🇩 বাংলা Bangla (Female)</option>\n"
+        "                        <option value='bn-male'>🇧🇩 বাংলা Bangla (Male)</option>\n"
+        "                        <option value='en-gb'>🇬🇧 UK English</option>\n"
+        "                        <option value='es'>🇪🇸 Spanish</option>\n"
+        "                        <option value='fr'>🇫🇷 French</option>\n"
+        "                        <option value='ja'>🇯🇵 Japanese</option>\n"
+        "                    </select>\n"
+        "                    <!-- SAM Voice Select -->\n"
+        "                    <select id='voice-select' class='voice-sel' style='display: none;'>\n"
+        "                        <option value='4' selected>🦊 Loona / Mascot</option>\n"
+        "                        <option value='5'>👨 Human Male</option>\n"
+        "                        <option value='6'>👩 Human Female</option>\n"
         "                        <option value='0'>🤖 Classic Robot</option>\n"
         "                        <option value='1'>🐶 Cute Pet</option>\n"
         "                        <option value='2'>🦾 Deep Bot</option>\n"
@@ -593,12 +728,19 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                    </select>\n"
         "                    <button class='btn-speak' id='btn-speak' onclick='window.sendTTS()'>🔊 Speak</button>\n"
         "                </div>\n"
+        "                <!-- Walkie-Talkie Push-To-Talk Panel -->\n"
+        "                <div id='mic-panel' class='mic-box'>\n"
+        "                    <button id='btn-ptt' class='btn-ptt'>🎙️ Hold to Speak</button>\n"
+        "                    <div class='mic-note'>Hold to speak into your mic. Release to broadcast on PetBot speaker!</div>\n"
+        "                </div>\n"
         "                <div class='chips'>\n"
         "                    <span class='chips-title'>Quick:</span>\n"
+        "                    <button class='chip' onclick='window.quickSay(\"N? Are?\")'>🦊 N? Are?</button>\n"
+        "                    <button class='chip' onclick='window.quickSay(\"What is that?\")'>🤔 What is that?</button>\n"
         "                    <button class='chip' onclick='window.quickSay(\"Hello master\")'>👋 Hello</button>\n"
-        "                    <button class='chip' onclick='window.quickSay(\"Good boy\")'>🐶 Good boy</button>\n"
-        "                    <button class='chip' onclick='window.quickSay(\"I am PetBot\")'>🤖 PetBot</button>\n"
-        "                    <button class='chip' onclick='window.quickSay(\"I see you\")'>👀 I see you</button>\n"
+        "                    <button class='chip' onclick='window.quickSay(\"হ্যালো কেমন আছেন\")'>👋 হ্যালো</button>\n"
+        "                    <button class='chip' onclick='window.quickSay(\"আমি পেটবট\")'>🤖 আমি পেটবট</button>\n"
+        "                    <button class='chip' onclick='window.quickSay(\"কেমন আছো বন্ধু\")'>🐶 কেমন আছো?</button>\n"
         "                    <button class='chip' onclick='window.quickSay(\"Warning intruder detected\")'>🚨 Warning</button>\n"
         "                    <button class='chip' onclick='window.quickSay(\"Feed me please\")'>🍖 Feed me</button>\n"
         "                </div>\n"
@@ -611,6 +753,7 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                <div class='card-title'>🎵 Robot Sounds & Audio FX</div>\n"
         "            </div>\n"
         "            <div class='fx-row'>\n"
+        "                <button class='btn-fx' onclick='window.triggerSound(\"curious\")'>🦊 Curious Tilt (N? Are?)</button>\n"
         "                <button class='btn-fx' onclick='window.triggerSound(\"happy\")'>✨ Happy Chime</button>\n"
         "                <button class='btn-fx' onclick='window.triggerSound(\"click\")'>🔔 Button Click</button>\n"
         "                <button class='btn-fx' onclick='window.triggerSound(\"tone\")'>🔊 1000Hz Test Tone</button>\n"
@@ -624,6 +767,22 @@ static esp_err_t index_handler(httpd_req_t *req)
         "        var streamControls = document.getElementById('stream-controls');\n"
         "        var streamBadge = document.getElementById('stream-badge');\n"
         "        var isStreaming = false;\n"
+        "        window.activeVoiceEngine = 'cloud';\n"
+        "        \n"
+        "        window.switchVoiceEngine = function(engine) {\n"
+        "            window.activeVoiceEngine = engine;\n"
+        "            document.getElementById('tab-cloud').className = 'vtab' + (engine === 'cloud' ? ' active' : '');\n"
+        "            document.getElementById('tab-sam').className = 'vtab' + (engine === 'sam' ? ' active' : '');\n"
+        "            document.getElementById('tab-mic').className = 'vtab' + (engine === 'mic' ? ' active' : '');\n"
+        "            var cloudSel = document.getElementById('cloud-lang-select');\n"
+        "            var samSel = document.getElementById('voice-select');\n"
+        "            var textPnl = document.getElementById('text-speak-panel');\n"
+        "            var micPnl = document.getElementById('mic-panel');\n"
+        "            if (cloudSel) cloudSel.style.display = (engine === 'cloud') ? 'block' : 'none';\n"
+        "            if (samSel) samSel.style.display = (engine === 'sam') ? 'block' : 'none';\n"
+        "            if (textPnl) textPnl.style.display = (engine === 'mic') ? 'none' : 'flex';\n"
+        "            if (micPnl) micPnl.style.display = (engine === 'mic') ? 'flex' : 'none';\n"
+        "        };\n"
         "        \n"
         "        window.startLiveStream = function() {\n"
         "            console.log('PetBot: Launching stream...');\n"
@@ -664,8 +823,12 @@ static esp_err_t index_handler(httpd_req_t *req)
         "            var input = document.getElementById('tts-input');\n"
         "            var text = textOverride || (input ? input.value.trim() : '');\n"
         "            if (!text) { if (input) input.focus(); return; }\n"
-        "            var select = document.getElementById('voice-select');\n"
-        "            var preset = select ? parseInt(select.value) : 0;\n"
+        "            var engine = window.activeVoiceEngine || 'cloud';\n"
+        "            if (engine === 'mic') engine = 'cloud';\n"
+        "            var langSel = document.getElementById('cloud-lang-select');\n"
+        "            var voiceSel = document.getElementById('voice-select');\n"
+        "            var lang = langSel ? langSel.value : 'en';\n"
+        "            var preset = voiceSel ? parseInt(voiceSel.value) : 4;\n"
         "            var btn = document.getElementById('btn-speak');\n"
         "            var badge = document.getElementById('tts-badge');\n"
         "            if (btn) btn.disabled = true;\n"
@@ -674,11 +837,11 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                badge.innerHTML = 'Speaking... 🔊';\n"
         "            }\n"
         "            try {\n"
-        "                console.log('PetBot: Sending TTS ->', text);\n"
+        "                console.log('PetBot: Sending ' + engine + ' speech ->', text);\n"
         "                var resp = await fetch('/speak', {\n"
         "                    method: 'POST',\n"
         "                    headers: {'Content-Type': 'application/json'},\n"
-        "                    body: JSON.stringify({text: text, preset: preset})\n"
+        "                    body: JSON.stringify({text: text, engine: engine, lang: lang, preset: preset})\n"
         "                });\n"
         "                if (resp.ok && !textOverride && input) input.value = '';\n"
         "            } catch(e) {\n"
@@ -709,6 +872,90 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                console.error('FX error:', e);\n"
         "            }\n"
         "        };\n"
+        "        \n"
+        "        var isPTT = false;\n"
+        "        var pttStream = null;\n"
+        "        var pttAudioCtx = null;\n"
+        "        var pttPcmChunks = [];\n"
+        "        \n"
+        "        window.startPTT = async function(e) {\n"
+        "            if (e) e.preventDefault();\n"
+        "            if (isPTT) return;\n"
+        "            try {\n"
+        "                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {\n"
+        "                    alert('Microphone access requires HTTPS or localhost');\n"
+        "                    return;\n"
+        "                }\n"
+        "                pttStream = await navigator.mediaDevices.getUserMedia({ audio: true });\n"
+        "                pttAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });\n"
+        "                var source = pttAudioCtx.createMediaStreamSource(pttStream);\n"
+        "                var proc = pttAudioCtx.createScriptProcessor(2048, 1, 1);\n"
+        "                pttPcmChunks = [];\n"
+        "                proc.onaudioprocess = function(ev) {\n"
+        "                    if (!isPTT) return;\n"
+        "                    var ch = ev.inputBuffer.getChannelData(0);\n"
+        "                    var arr = new Int16Array(ch.length);\n"
+        "                    for (var i = 0; i < ch.length; i++) {\n"
+        "                        var s = Math.max(-1, Math.min(1, ch[i]));\n"
+        "                        arr[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;\n"
+        "                    }\n"
+        "                    pttPcmChunks.push(arr);\n"
+        "                };\n"
+        "                source.connect(proc);\n"
+        "                proc.connect(pttAudioCtx.destination);\n"
+        "                window._pttSource = source;\n"
+        "                window._pttProc = proc;\n"
+        "                isPTT = true;\n"
+        "                var pttBtn = document.getElementById('btn-ptt');\n"
+        "                if (pttBtn) { pttBtn.className = 'btn-ptt active'; pttBtn.innerText = '🔴 Transmitting Live...'; }\n"
+        "                var badge = document.getElementById('tts-badge');\n"
+        "                if (badge) { badge.className = 'badge badge-speaking'; badge.innerHTML = 'Mic Active 🎙️'; }\n"
+        "            } catch(err) {\n"
+        "                console.error('PTT Error:', err);\n"
+        "                alert('Microphone error: ' + err.message);\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.stopPTT = async function(e) {\n"
+        "            if (e) e.preventDefault();\n"
+        "            if (!isPTT) return;\n"
+        "            isPTT = false;\n"
+        "            var pttBtn = document.getElementById('btn-ptt');\n"
+        "            if (pttBtn) { pttBtn.className = 'btn-ptt'; pttBtn.innerText = '🎙️ Hold to Speak'; }\n"
+        "            var badge = document.getElementById('tts-badge');\n"
+        "            if (badge) { badge.className = 'badge badge-off'; badge.innerHTML = 'Ready'; }\n"
+        "            if (window._pttSource) window._pttSource.disconnect();\n"
+        "            if (window._pttProc) window._pttProc.disconnect();\n"
+        "            if (pttStream) pttStream.getTracks().forEach(function(t) { t.stop(); });\n"
+        "            if (pttAudioCtx) pttAudioCtx.close();\n"
+        "            var total = 0;\n"
+        "            for (var i = 0; i < pttPcmChunks.length; i++) total += pttPcmChunks[i].length;\n"
+        "            if (total > 0) {\n"
+        "                var merged = new Int16Array(total);\n"
+        "                var off = 0;\n"
+        "                for (var j = 0; j < pttPcmChunks.length; j++) {\n"
+        "                    merged.set(pttPcmChunks[j], off);\n"
+        "                    off += pttPcmChunks[j].length;\n"
+        "                }\n"
+        "                try {\n"
+        "                    console.log('Sending PCM audio -> ' + merged.byteLength + ' bytes');\n"
+        "                    await fetch('/api/play_pcm?rate=16000', {\n"
+        "                        method: 'POST',\n"
+        "                        headers: { 'Content-Type': 'application/octet-stream' },\n"
+        "                        body: merged.buffer\n"
+        "                    });\n"
+        "                } catch(err) { console.error('Play PCM error:', err); }\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        var btnPtt = document.getElementById('btn-ptt');\n"
+        "        if (btnPtt) {\n"
+        "            btnPtt.addEventListener('mousedown', window.startPTT);\n"
+        "            btnPtt.addEventListener('mouseup', window.stopPTT);\n"
+        "            btnPtt.addEventListener('mouseleave', window.stopPTT);\n"
+        "            btnPtt.addEventListener('touchstart', window.startPTT, { passive: false });\n"
+        "            btnPtt.addEventListener('touchend', window.stopPTT, { passive: false });\n"
+        "        }\n"
         "        \n"
         "        var ttsIn = document.getElementById('tts-input');\n"
         "        if (ttsIn) {\n"
@@ -754,7 +1001,7 @@ void start_camera_server(void)
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.stack_size = 10240;
-    config.max_uri_handlers = 14;
+    config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
     config.send_wait_timeout = 10;
     config.recv_wait_timeout = 10;
@@ -809,6 +1056,14 @@ void start_camera_server(void)
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &speak_get_uri);
+
+        httpd_uri_t play_pcm_uri = {
+            .uri = "/api/play_pcm",
+            .method = HTTP_POST,
+            .handler = play_pcm_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &play_pcm_uri);
 
         httpd_uri_t status_uri = {
             .uri = "/api/status",
