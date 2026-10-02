@@ -2,7 +2,7 @@
     "idf.espIdfPath": "C:\\esp\\v6.1\\esp-idf",
     "idf.toolsPath": "C:\\Espressif\\tools",
     "idf.pythonBinPath": "C:\\Espressif\\tools\\python\\v6.1\\venv\\Scripts\\python.exe",
-    "idf.port": "COM3",
+    "idf.port": "COM7",
     "idf.flashType": "UART",
     "terminal.integrated.profiles.windows": {
         "ESP-IDF PowerShell": {

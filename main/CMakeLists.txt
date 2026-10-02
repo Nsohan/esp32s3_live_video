@@ -77,4 +77,6 @@ idf_component_register(
         espressif__esp32-camera
         espressif__esp_jpeg
         espressif__esp-sr
+        app_update
+        esp_app_format
 )

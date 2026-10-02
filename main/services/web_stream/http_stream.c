@@ -9,6 +9,13 @@
 #include "tts_service.h"
 #include "battery_service.h"
 #include "audio_player.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
+#include "esp_app_format.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <stdarg.h>
 
 static const char *TAG = "http_stream";
 
@@ -322,6 +329,323 @@ static esp_err_t fx_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, "{\"status\":\"ok\"}", 15);
+}
+
+// Deferred restart task so HTTP response finishes cleanly before chip reboots
+static void ota_restart_task(void *pvParameter)
+{
+    ESP_LOGI(TAG, "OTA: System restarting in 1200ms...");
+    vTaskDelay(pdMS_TO_TICKS(1200));
+    esp_restart();
+}
+
+// Web Serial Monitor Circular Buffer & Hook
+#define WEB_LOG_BUFFER_SIZE (24 * 1024)
+static char s_web_log_buf[WEB_LOG_BUFFER_SIZE];
+static uint32_t s_web_log_total_bytes = 0;
+static SemaphoreHandle_t s_web_log_mutex = NULL;
+static vprintf_like_t s_prev_vprintf = NULL;
+
+static int web_log_vprintf(const char *fmt, va_list ap)
+{
+    va_list ap_copy;
+    va_copy(ap_copy, ap);
+    int ret = 0;
+    if (s_prev_vprintf) {
+        ret = s_prev_vprintf(fmt, ap);
+    } else {
+        ret = vprintf(fmt, ap);
+    }
+
+    if (!s_web_log_mutex || xPortInIsrContext()) {
+        va_end(ap_copy);
+        return ret;
+    }
+
+    char tmp[384];
+    int len = vsnprintf(tmp, sizeof(tmp), fmt, ap_copy);
+    va_end(ap_copy);
+
+    if (len > 0) {
+        if (len >= (int)sizeof(tmp)) {
+            len = sizeof(tmp) - 1;
+        }
+
+        if (xSemaphoreTake(s_web_log_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            uint32_t head = s_web_log_total_bytes;
+            for (int i = 0; i < len; i++) {
+                s_web_log_buf[(head + i) % WEB_LOG_BUFFER_SIZE] = tmp[i];
+            }
+            s_web_log_total_bytes += len;
+            xSemaphoreGive(s_web_log_mutex);
+        }
+    }
+
+    return ret;
+}
+
+void web_log_init(void)
+{
+    if (!s_web_log_mutex) {
+        s_web_log_mutex = xSemaphoreCreateMutex();
+        s_prev_vprintf = esp_log_set_vprintf(web_log_vprintf);
+        ESP_LOGI(TAG, "Web Serial Monitor hook active (buffer: %d KB)", WEB_LOG_BUFFER_SIZE / 1024);
+    }
+}
+
+// Web Serial Monitor logs API (/api/logs?since=N)
+static esp_err_t logs_get_handler(httpd_req_t *req)
+{
+    uint32_t since = 0;
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[32];
+        if (httpd_query_key_value(query, "since", val, sizeof(val)) == ESP_OK) {
+            since = (uint32_t)strtoul(val, NULL, 10);
+        }
+    }
+
+    char head_str[32];
+    uint32_t total = 0;
+    uint32_t start_pos = 0;
+    uint32_t count = 0;
+
+    if (!s_web_log_mutex) {
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        httpd_resp_set_hdr(req, "X-Log-Head", "0");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "", 0);
+    }
+
+    if (xSemaphoreTake(s_web_log_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_send(req, "Busy", HTTPD_RESP_USE_STRLEN);
+    }
+
+    total = s_web_log_total_bytes;
+
+    if (since == 0 || since < (total > WEB_LOG_BUFFER_SIZE ? total - WEB_LOG_BUFFER_SIZE : 0) || since > total) {
+        uint32_t max_backlog = 8192;
+        if (total < max_backlog) {
+            start_pos = 0;
+            count = total;
+        } else {
+            start_pos = total - max_backlog;
+            count = max_backlog;
+        }
+    } else {
+        start_pos = since;
+        count = total - since;
+    }
+
+    char *out = NULL;
+    if (count > 0) {
+        out = malloc(count + 1);
+        if (!out && count > 2048) {
+            count = 2048;
+            start_pos = total - count;
+            out = malloc(count + 1);
+        }
+        if (out) {
+            for (uint32_t i = 0; i < count; i++) {
+                out[i] = s_web_log_buf[(start_pos + i) % WEB_LOG_BUFFER_SIZE];
+            }
+            out[count] = '\0';
+        } else {
+            count = 0;
+        }
+    }
+
+    xSemaphoreGive(s_web_log_mutex);
+
+    snprintf(head_str, sizeof(head_str), "%lu", (unsigned long)total);
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "X-Log-Head", head_str);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+
+    esp_err_t res = ESP_OK;
+    if (out && count > 0) {
+        res = httpd_resp_send(req, out, count);
+        free(out);
+    } else {
+        res = httpd_resp_send(req, "", 0);
+    }
+
+    return res;
+}
+
+// Clear Web Serial Monitor log buffer (/api/logs/clear)
+static esp_err_t logs_clear_handler(httpd_req_t *req)
+{
+    if (s_web_log_mutex && xSemaphoreTake(s_web_log_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        memset(s_web_log_buf, 0, sizeof(s_web_log_buf));
+        s_web_log_total_bytes = 0;
+        xSemaphoreGive(s_web_log_mutex);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"status\":\"ok\"}", HTTPD_RESP_USE_STRLEN);
+}
+
+// OTA Information endpoint (/api/ota_info)
+static esp_err_t ota_info_handler(httpd_req_t *req)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    const esp_app_desc_t *app = esp_app_get_description();
+
+    char resp[300];
+    snprintf(resp, sizeof(resp),
+             "{\"running\":\"%s\",\"target\":\"%s\",\"version\":\"%s\",\"date\":\"%s\",\"time\":\"%s\",\"idf\":\"%s\"}",
+             running ? running->label : "factory",
+             next ? next->label : "unknown",
+             app ? app->version : "1.0.0",
+             app ? app->date : "unknown",
+             app ? app->time : "",
+             app ? app->idf_ver : "");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+// OTA Firmware POST upload handler (/ota)
+static esp_err_t ota_post_handler(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "Starting OTA update handler... Content-Length: %d", req->content_len);
+
+    if (req->content_len <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Error: Content-Length required", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!update_partition) {
+        ESP_LOGE(TAG, "No valid OTA update partition found!");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Error: No OTA partition found in partition table", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    ESP_LOGI(TAG, "Running partition: %s, Writing OTA to: %s (addr: 0x%08lx, max_size: %lu)",
+             running ? running->label : "factory",
+             update_partition->label,
+             (unsigned long)update_partition->address,
+             (unsigned long)update_partition->size);
+
+    if ((size_t)req->content_len > update_partition->size) {
+        ESP_LOGE(TAG, "Firmware binary (%d bytes) exceeds target partition (%lu bytes)",
+                 req->content_len, (unsigned long)update_partition->size);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_send(req, "Error: Firmware size exceeds target partition capacity", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    // Stop active camera streaming to conserve memory and flash/DMA bus bandwidth
+    streaming_enabled = false;
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_begin failed: %s (0x%x)", esp_err_to_name(err), err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Error: esp_ota_begin failed", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(4096);
+    if (!buf) {
+        ESP_LOGE(TAG, "Failed to allocate 4KB OTA receive buffer");
+        esp_ota_abort(ota_handle);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Error: Out of memory for OTA buffer", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    int received = 0;
+    bool is_first = true;
+
+    while (remaining > 0) {
+        int to_read = (remaining < 4096) ? remaining : 4096;
+        int ret = httpd_req_recv(req, buf, to_read);
+        if (ret <= 0) {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                continue;
+            }
+            ESP_LOGE(TAG, "OTA socket receive failed: %d", ret);
+            free(buf);
+            esp_ota_abort(ota_handle);
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "Error: Socket receive failed or disconnected", HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+
+        if (is_first) {
+            // ESP32 app binary magic byte validation (must begin with 0xE9 / ESP_IMAGE_HEADER_MAGIC)
+            if ((uint8_t)buf[0] != ESP_IMAGE_HEADER_MAGIC) {
+                ESP_LOGE(TAG, "Invalid magic byte: 0x%02X (expected 0x%02X)", (uint8_t)buf[0], ESP_IMAGE_HEADER_MAGIC);
+                free(buf);
+                esp_ota_abort(ota_handle);
+                httpd_resp_set_status(req, "400 Bad Request");
+                httpd_resp_send(req, "Error: Invalid image magic byte (not an ESP32 binary)", HTTPD_RESP_USE_STRLEN);
+                return ESP_FAIL;
+            }
+            is_first = false;
+        }
+
+        err = esp_ota_write(ota_handle, (const void *)buf, ret);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_ota_write error: %s (0x%x)", esp_err_to_name(err), err);
+            free(buf);
+            esp_ota_abort(ota_handle);
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_send(req, "Error: Flash write failed during OTA", HTTPD_RESP_USE_STRLEN);
+            return ESP_FAIL;
+        }
+
+        received += ret;
+        remaining -= ret;
+
+        if (received % (128 * 1024) < ret || remaining == 0) {
+            ESP_LOGI(TAG, "OTA Flashing: %d / %d bytes (%d%%)",
+                     received, req->content_len, (received * 100) / req->content_len);
+        }
+    }
+
+    free(buf);
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_end failed: %s (0x%x)", esp_err_to_name(err), err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Error: Firmware verification failed", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s (0x%x)", esp_err_to_name(err), err);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_send(req, "Error: Failed to set boot partition", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA Succeeded! Partition '%s' configured for next boot. Restarting...", update_partition->label);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    const char *resp = "{\"status\":\"ok\",\"message\":\"Firmware flashed successfully! Rebooting...\"}";
+    httpd_resp_send(req, resp, strlen(resp));
+
+    // Schedule reboot after sending response
+    xTaskCreate(&ota_restart_task, "ota_restart_task", 2048, NULL, 5, NULL);
+    return ESP_OK;
 }
 
 // Full Dashboard UI
@@ -645,6 +969,26 @@ static esp_err_t index_handler(httpd_req_t *req)
         "            font-size: 13px;"
         "            border: 1px solid #475569;"
         "        }"
+        "        /* OTA Firmware Card */"
+        "        .ota-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }"
+        "        .ota-info-row { display: flex; gap: 14px; font-size: 13px; color: #94a3b8; flex-wrap: wrap; background: #0f172a; padding: 10px 14px; border-radius: 8px; border: 1px solid #334155; align-items: center; }"
+        "        .ota-upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }"
+        "        .ota-file-name { font-size: 13px; color: #cbd5e1; flex: 1; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }"
+        "        .btn-file { background: #334155; color: #f1f5f9; padding: 10px 16px; border-radius: 8px; border: 1px solid #475569; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.2s; }"
+        "        .btn-file:hover { background: #475569; }"
+        "        .btn-ota { background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 10px 22px; border-radius: 8px; border: none; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: 0 4px 12px rgba(16,185,129,0.3); transition: opacity 0.2s; }"
+        "        .btn-ota:disabled { opacity: 0.4; cursor: not-allowed; }"
+        "        .progress-bar-bg { width: 100%; height: 10px; background: #0f172a; border-radius: 5px; overflow: hidden; border: 1px solid #334155; margin-top: 4px; }"
+        "        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #10b981); transition: width 0.2s ease; }"
+        "        .ota-status-text { font-size: 12px; color: #38bdf8; margin-top: 4px; text-align: center; font-weight: 500; }\n"
+        "        /* Serial Monitor Card */\n"
+        "        .term-header-actions { display: flex; gap: 8px; align-items: center; }\n"
+        "        .term-controls { display: flex; gap: 8px; padding: 10px 16px; background: #0f172a; border-bottom: 1px solid #1e293b; align-items: center; flex-wrap: wrap; }\n"
+        "        .term-input { background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 5px 10px; border-radius: 6px; font-size: 12px; flex: 1; min-width: 140px; outline: none; }\n"
+        "        .term-btn { background: #1e293b; border: 1px solid #334155; color: #cbd5e1; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 4px; }\n"
+        "        .term-btn:hover { background: #334155; color: #fff; }\n"
+        "        .term-check { font-size: 12px; color: #94a3b8; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }\n"
+        "        .term-box { background: #050914; height: 320px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 11.5px; line-height: 1.45; padding: 12px 14px; color: #e2e8f0; white-space: pre-wrap; word-break: break-all; user-select: text; border-top: 1px solid #1e293b; }\n"
         "    </style>"
         "</head>"
         "<body>"
@@ -758,6 +1102,58 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                <button class='btn-fx' onclick='window.triggerSound(\"click\")'>🔔 Button Click</button>\n"
         "                <button class='btn-fx' onclick='window.triggerSound(\"tone\")'>🔊 1000Hz Test Tone</button>\n"
         "            </div>\n"
+        "        </div>\n"
+        "        \n"
+        "        <!-- Wireless Firmware OTA Card -->\n"
+        "        <div class='card'>\n"
+        "            <div class='card-header'>\n"
+        "                <div class='card-title'>🚀 Wireless Firmware Update (OTA)</div>\n"
+        "                <span id='ota-badge' class='badge badge-off'>Ready</span>\n"
+        "            </div>\n"
+        "            <div class='ota-body'>\n"
+        "                <div class='ota-info-row'>\n"
+        "                    <span>Active Slot: <b id='ota-part' style='color:#38bdf8'>Checking...</b></span>\n"
+        "                    <span>Target: <b id='ota-target' style='color:#34d399'>--</b></span>\n"
+        "                    <span>Version: <b id='ota-ver' style='color:#f1f5f9'>--</b></span>\n"
+        "                    <span>Built: <b id='ota-date' style='color:#94a3b8'>--</b></span>\n"
+        "                </div>\n"
+        "                <div class='ota-upload-row'>\n"
+        "                    <input type='file' id='ota-file' accept='.bin' style='display:none'>\n"
+        "                    <button class='btn-file' type='button' onclick='document.getElementById(\"ota-file\").click()'>📁 Select .bin File</button>\n"
+        "                    <span id='ota-file-name' class='ota-file-name'>No file selected</span>\n"
+        "                    <button class='btn-ota' id='btn-flash-ota' type='button' onclick='window.uploadOTA()' disabled>⚡ Flash Firmware</button>\n"
+        "                </div>\n"
+        "                <div id='ota-progress-container' style='display:none;'>\n"
+        "                    <div class='progress-bar-bg'>\n"
+        "                        <div id='ota-progress-fill' class='progress-bar-fill' style='width:0%'></div>\n"
+        "                    </div>\n"
+        "                    <div id='ota-status-text' class='ota-status-text'>Uploading: 0%</div>\n"
+        "                </div>\n"
+        "            </div>\n"
+        "        </div>\n"
+        "        \n"
+        "        <!-- Live Serial Monitor Card -->\n"
+        "        <div class='card'>\n"
+        "            <div class='card-header'>\n"
+        "                <div class='card-title'>🖥️ Live Serial Monitor & System Logs</div>\n"
+        "                <div class='term-header-actions'>\n"
+        "                    <span id='term-badge' class='badge badge-live'>Live 🟢</span>\n"
+        "                </div>\n"
+        "            </div>\n"
+        "            <div class='term-controls'>\n"
+        "                <input type='text' id='term-filter' class='term-input' placeholder='Filter logs (e.g. roboeyes, ota, tts, error)...'>\n"
+        "                <select id='term-level' class='voice-sel' style='width:auto;padding:5px 8px;font-size:12px;'>\n"
+        "                    <option value='all' selected>All Levels</option>\n"
+        "                    <option value='error'>Errors (E)</option>\n"
+        "                    <option value='warn'>Warnings (W)</option>\n"
+        "                    <option value='info'>Info (I)</option>\n"
+        "                </select>\n"
+        "                <label class='term-check'><input type='checkbox' id='term-autoscroll' checked> Auto-scroll</label>\n"
+        "                <button class='term-btn' id='term-btn-pause' onclick='window.toggleLogPause()'>⏸️ Pause</button>\n"
+        "                <button class='term-btn' onclick='window.clearLogDisplay()'>🗑️ Clear</button>\n"
+        "                <button class='term-btn' onclick='window.exportLogs()'>💾 Export</button>\n"
+        "            </div>\n"
+        "            <div id='term-box' class='term-box'>Connecting to live serial log stream...</div>\n"
         "        </div>\n"
         "    </div>\n"
         "    <script>\n"
@@ -985,6 +1381,229 @@ static esp_err_t index_handler(httpd_req_t *req)
         "        };\n"
         "        setInterval(window.updateTelemetry, 4000);\n"
         "        window.updateTelemetry();\n"
+        "        \n"
+        "        var otaFileIn = document.getElementById('ota-file');\n"
+        "        var otaFileName = document.getElementById('ota-file-name');\n"
+        "        var btnFlashOta = document.getElementById('btn-flash-ota');\n"
+        "        var otaSelectedFile = null;\n"
+        "        if (otaFileIn) {\n"
+        "            otaFileIn.addEventListener('change', function(e) {\n"
+        "                if (e.target.files && e.target.files.length > 0) {\n"
+        "                    otaSelectedFile = e.target.files[0];\n"
+        "                    otaFileName.innerText = otaSelectedFile.name + ' (' + (otaSelectedFile.size / 1024 / 1024).toFixed(2) + ' MB)';\n"
+        "                    btnFlashOta.disabled = false;\n"
+        "                } else {\n"
+        "                    otaSelectedFile = null;\n"
+        "                    otaFileName.innerText = 'No file selected';\n"
+        "                    btnFlashOta.disabled = true;\n"
+        "                }\n"
+        "            });\n"
+        "        }\n"
+        "        window.uploadOTA = function() {\n"
+        "            if (!otaSelectedFile) return;\n"
+        "            if (!confirm('Flash firmware ' + otaSelectedFile.name + ' over Wi-Fi?\\n\\nThe robot will automatically reboot when completed.')) return;\n"
+        "            var progContainer = document.getElementById('ota-progress-container');\n"
+        "            var progFill = document.getElementById('ota-progress-fill');\n"
+        "            var statusText = document.getElementById('ota-status-text');\n"
+        "            var otaBadge = document.getElementById('ota-badge');\n"
+        "            progContainer.style.display = 'block';\n"
+        "            btnFlashOta.disabled = true;\n"
+        "            otaBadge.className = 'badge badge-speaking';\n"
+        "            otaBadge.innerText = 'Flashing...';\n"
+        "            var xhr = new XMLHttpRequest();\n"
+        "            xhr.open('POST', '/ota', true);\n"
+        "            xhr.setRequestHeader('Content-Type', 'application/octet-stream');\n"
+        "            xhr.upload.onprogress = function(e) {\n"
+        "                if (e.lengthComputable) {\n"
+        "                    var pct = Math.round((e.loaded / e.total) * 100);\n"
+        "                    progFill.style.width = pct + '%';\n"
+        "                    statusText.innerText = 'Uploading & Flashing: ' + pct + '% (' + (e.loaded / 1024 / 1024).toFixed(2) + ' / ' + (e.total / 1024 / 1024).toFixed(2) + ' MB)';\n"
+        "                }\n"
+        "            };\n"
+        "            xhr.onload = function() {\n"
+        "                if (xhr.status >= 200 && xhr.status < 300) {\n"
+        "                    progFill.style.width = '100%';\n"
+        "                    statusText.innerHTML = '✅ <b>Flash Successful! PetBot is rebooting now...</b>';\n"
+        "                    statusText.style.color = '#34d399';\n"
+        "                    otaBadge.className = 'badge badge-live';\n"
+        "                    otaBadge.innerText = 'Rebooting';\n"
+        "                    var count = 8;\n"
+        "                    var t = setInterval(function() {\n"
+        "                        statusText.innerHTML = '✅ <b>Rebooting... Refreshing in ' + count + 's</b>';\n"
+        "                        count--;\n"
+        "                        if (count < 0) {\n"
+        "                            clearInterval(t);\n"
+        "                            window.location.reload();\n"
+        "                        }\n"
+        "                    }, 1000);\n"
+        "                } else {\n"
+        "                    statusText.innerHTML = '❌ Flash Failed: ' + (xhr.responseText || 'HTTP Error ' + xhr.status);\n"
+        "                    statusText.style.color = '#f87171';\n"
+        "                    otaBadge.className = 'badge badge-off';\n"
+        "                    otaBadge.innerText = 'Failed';\n"
+        "                    btnFlashOta.disabled = false;\n"
+        "                }\n"
+        "            };\n"
+        "            xhr.onerror = function() {\n"
+        "                statusText.innerHTML = '❌ Network connection error during OTA upload';\n"
+        "                statusText.style.color = '#f87171';\n"
+        "                btnFlashOta.disabled = false;\n"
+        "            };\n"
+        "            xhr.send(otaSelectedFile);\n"
+        "        };\n"
+        "        window.loadOTAInfo = async function() {\n"
+        "            try {\n"
+        "                var r = await fetch('/api/ota_info');\n"
+        "                if (r.ok) {\n"
+        "                    var data = await r.json();\n"
+        "                    var partEl = document.getElementById('ota-part');\n"
+        "                    var tgtEl = document.getElementById('ota-target');\n"
+        "                    var verEl = document.getElementById('ota-ver');\n"
+        "                    var dateEl = document.getElementById('ota-date');\n"
+        "                    if (partEl && data.running) partEl.innerText = data.running;\n"
+        "                    if (tgtEl && data.target) tgtEl.innerText = data.target;\n"
+        "                    if (verEl && data.version) verEl.innerText = data.version;\n"
+        "                    if (dateEl && data.date) dateEl.innerText = data.date + (data.time ? ' ' + data.time : '');\n"
+        "                }\n"
+        "            } catch(e) {}\n"
+        "        };\n"
+        "        window.loadOTAInfo();\n"
+        "        \n"
+        "        // Serial Monitor Terminal Logic\n"
+        "        var logHead = 0;\n"
+        "        var logPaused = false;\n"
+        "        var logAutoScroll = true;\n"
+        "        var logAllLines = [];\n"
+        "        var termBox = document.getElementById('term-box');\n"
+        "        var termFilter = document.getElementById('term-filter');\n"
+        "        var termLevel = document.getElementById('term-level');\n"
+        "        var termAutoScroll = document.getElementById('term-autoscroll');\n"
+        "        var termBadge = document.getElementById('term-badge');\n"
+        "        var termBtnPause = document.getElementById('term-btn-pause');\n"
+        "        \n"
+        "        function ansiToHtml(str) {\n"
+        "            var esc = str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n"
+        "            return esc\n"
+        "                .replace(/\\033\\[0;31m/g, '<span style=\"color:#f87171;font-weight:600;\">')\n"
+        "                .replace(/\\033\\[1;31m/g, '<span style=\"color:#ef4444;font-weight:bold;\">')\n"
+        "                .replace(/\\033\\[0;32m/g, '<span style=\"color:#34d399;font-weight:600;\">')\n"
+        "                .replace(/\\033\\[0;33m/g, '<span style=\"color:#fbbf24;font-weight:600;\">')\n"
+        "                .replace(/\\033\\[0;34m/g, '<span style=\"color:#60a5fa;\">')\n"
+        "                .replace(/\\033\\[0;35m/g, '<span style=\"color:#c084fc;\">')\n"
+        "                .replace(/\\033\\[0;36m/g, '<span style=\"color:#38bdf8;\">')\n"
+        "                .replace(/\\033\\[0;37m/g, '<span style=\"color:#94a3b8;\">')\n"
+        "                .replace(/\\033\\[0m/g, '</span>')\n"
+        "                .replace(/\\033\\[[0-9;]*m/g, '');\n"
+        "        }\n"
+        "        \n"
+        "        window.toggleLogPause = function() {\n"
+        "            logPaused = !logPaused;\n"
+        "            if (termBtnPause) termBtnPause.innerText = logPaused ? '▶️ Resume' : '⏸️ Pause';\n"
+        "            if (termBadge) {\n"
+        "                termBadge.className = logPaused ? 'badge badge-off' : 'badge badge-live';\n"
+        "                termBadge.innerText = logPaused ? 'Paused ⏸️' : 'Live 🟢';\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.clearLogDisplay = function() {\n"
+        "            logAllLines = [];\n"
+        "            if (termBox) termBox.innerHTML = '<span style=\"color:#64748b;\">[Terminal Cleared]</span>\\n';\n"
+        "            fetch('/api/logs/clear', { method: 'POST' }).catch(function(){});\n"
+        "        };\n"
+        "        \n"
+        "        window.exportLogs = function() {\n"
+        "            var rawText = logAllLines.join('\\n').replace(/\\033\\[[0-9;]*m/g, '');\n"
+        "            var blob = new Blob([rawText], { type: 'text/plain' });\n"
+        "            var a = document.createElement('a');\n"
+        "            a.href = URL.createObjectURL(blob);\n"
+        "            a.download = 'petbot_serial_' + Date.now() + '.txt';\n"
+        "            a.click();\n"
+        "        };\n"
+        "        \n"
+        "        function filterLine(line, kw, lvl) {\n"
+        "            if (lvl === 'error' && !line.includes('E (') && !line.includes('[E]') && !line.toLowerCase().includes('error')) return false;\n"
+        "            if (lvl === 'warn' && !line.includes('W (') && !line.includes('[W]') && !line.toLowerCase().includes('warn')) return false;\n"
+        "            if (lvl === 'info' && !line.includes('I (') && !line.includes('[I]')) return false;\n"
+        "            if (kw && !line.toLowerCase().includes(kw)) return false;\n"
+        "            return true;\n"
+        "        }\n"
+        "        \n"
+        "        window.renderLogs = function() {\n"
+        "            if (!termBox) return;\n"
+        "            var kw = termFilter ? termFilter.value.trim().toLowerCase() : '';\n"
+        "            var lvl = termLevel ? termLevel.value : 'all';\n"
+        "            var filtered = [];\n"
+        "            for (var i = 0; i < logAllLines.length; i++) {\n"
+        "                if (filterLine(logAllLines[i], kw, lvl)) {\n"
+        "                    filtered.push(ansiToHtml(logAllLines[i]));\n"
+        "                }\n"
+        "            }\n"
+        "            termBox.innerHTML = filtered.length > 0 ? filtered.join('\\n') : '<span style=\"color:#64748b;\">[No matching logs]</span>';\n"
+        "            if (logAutoScroll) termBox.scrollTop = termBox.scrollHeight;\n"
+        "        };\n"
+        "        \n"
+        "        if (termFilter) termFilter.addEventListener('input', window.renderLogs);\n"
+        "        if (termLevel) termLevel.addEventListener('change', window.renderLogs);\n"
+        "        if (termAutoScroll) {\n"
+        "            termAutoScroll.addEventListener('change', function(e) {\n"
+        "                logAutoScroll = e.target.checked;\n"
+        "                if (logAutoScroll && termBox) termBox.scrollTop = termBox.scrollHeight;\n"
+        "            });\n"
+        "        }\n"
+        "        if (termBox) {\n"
+        "            termBox.addEventListener('scroll', function() {\n"
+        "                var atBottom = termBox.scrollTop + termBox.clientHeight >= termBox.scrollHeight - 25;\n"
+        "                if (!atBottom && logAutoScroll) {\n"
+        "                    logAutoScroll = false;\n"
+        "                    if (termAutoScroll) termAutoScroll.checked = false;\n"
+        "                }\n"
+        "            });\n"
+        "        }\n"
+        "        \n"
+        "        var partialLine = '';\n"
+        "        window.appendLogChunk = function(text) {\n"
+        "            var full = partialLine + text;\n"
+        "            var lines = full.split('\\n');\n"
+        "            partialLine = lines.pop();\n"
+        "            if (lines.length === 0) return;\n"
+        "            \n"
+        "            var kw = termFilter ? termFilter.value.trim().toLowerCase() : '';\n"
+        "            var lvl = termLevel ? termLevel.value : 'all';\n"
+        "            \n"
+        "            for (var i = 0; i < lines.length; i++) {\n"
+        "                var l = lines[i];\n"
+        "                logAllLines.push(l);\n"
+        "                if (logAllLines.length > 1200) logAllLines.shift();\n"
+        "                if (filterLine(l, kw, lvl)) {\n"
+        "                    var el = document.createElement('div');\n"
+        "                    el.innerHTML = ansiToHtml(l);\n"
+        "                    if (termBox.innerText.indexOf('Connecting to live serial') !== -1) termBox.innerHTML = '';\n"
+        "                    termBox.appendChild(el);\n"
+        "                    if (termBox.childNodes.length > 600) termBox.removeChild(termBox.firstChild);\n"
+        "                }\n"
+        "            }\n"
+        "            if (logAutoScroll && termBox) {\n"
+        "                termBox.scrollTop = termBox.scrollHeight;\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.pollLogs = async function() {\n"
+        "            if (!logPaused) {\n"
+        "                try {\n"
+        "                    var r = await fetch('/api/logs?since=' + logHead);\n"
+        "                    if (r.ok) {\n"
+        "                        var h = r.headers.get('X-Log-Head');\n"
+        "                        if (h !== null) logHead = parseInt(h, 10);\n"
+        "                        var txt = await r.text();\n"
+        "                        if (txt.length > 0) {\n"
+        "                            window.appendLogChunk(txt);\n"
+        "                        }\n"
+        "                    }\n"
+        "                } catch(e) {}\n"
+        "            }\n"
+        "            setTimeout(window.pollLogs, 750);\n"
+        "        };\n"
+        "        window.pollLogs();\n"
         "        console.log('PetBot: Dashboard fully loaded & operational!');\n"
         "    </script>\n"
         "</body>\n"
@@ -1001,7 +1620,7 @@ void start_camera_server(void)
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.stack_size = 10240;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.lru_purge_enable = true;
     config.send_wait_timeout = 10;
     config.recv_wait_timeout = 10;
@@ -1081,7 +1700,45 @@ void start_camera_server(void)
         };
         httpd_register_uri_handler(server, &fx_uri);
 
-        ESP_LOGI(TAG, "PetBot Dashboard server started on port 80");
+        httpd_uri_t ota_post_uri = {
+            .uri = "/ota",
+            .method = HTTP_POST,
+            .handler = ota_post_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &ota_post_uri);
+
+        httpd_uri_t ota_info_uri = {
+            .uri = "/api/ota_info",
+            .method = HTTP_GET,
+            .handler = ota_info_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &ota_info_uri);
+
+        httpd_uri_t logs_get_uri = {
+            .uri = "/api/logs",
+            .method = HTTP_GET,
+            .handler = logs_get_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &logs_get_uri);
+
+        httpd_uri_t logs_clear_uri = {
+            .uri = "/api/logs/clear",
+            .method = HTTP_POST,
+            .handler = logs_clear_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &logs_clear_uri);
+
+        // Confirm running app state and cancel rollback if enabled
+        esp_ota_mark_app_valid_cancel_rollback();
+
+        // Ensure web log hook is active
+        web_log_init();
+
+        ESP_LOGI(TAG, "PetBot Dashboard server started on port 80 (OTA & Web Serial ready)");
     } else {
         ESP_LOGE(TAG, "Failed to start HTTP server");
     }

@@ -23,6 +23,7 @@
 #include "battery_service.h"
 #include "wake_word_service.h"
 #include "tts_service.h"
+#include "http_stream.h"
 
 static const char *TAG = "petbot_main";
 
@@ -33,6 +34,9 @@ static const char *TAG = "petbot_main";
 
 void app_main(void)
 {
+    // Initialize Web Serial Log Monitor buffer early so boot logs are captured
+    web_log_init();
+
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "        PETBOT EMBEDDED SYSTEM          ");
     ESP_LOGI(TAG, "========================================");

@@ -7,6 +7,11 @@ extern "C" {
 #endif
 
 /**
+ * @brief Initialize circular memory buffer and hook esp_log_set_vprintf for Web Serial Monitor
+ */
+void web_log_init(void);
+
+/**
  * @brief Start HTTP MJPEG camera streaming and remote control server on port 80
  */
 void start_camera_server(void);
