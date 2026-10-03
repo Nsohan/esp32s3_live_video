@@ -21,6 +21,11 @@ void start_camera_server(void);
  */
 bool http_stream_is_active(void);
 
+/**
+ * @brief Check if a web client is currently streaming mic audio
+ */
+bool http_stream_audio_is_active(void);
+
 #ifdef __cplusplus
 }
 #endif

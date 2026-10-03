@@ -16,6 +16,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdarg.h>
+#include "i2s_mic.h"
+#include "wake_word_service.h"
 
 static const char *TAG = "http_stream";
 
@@ -25,10 +27,16 @@ static const char *STREAM_CONTENT_TYPE =
 
 static volatile bool streaming_enabled = true;
 static volatile bool s_client_streaming = false;
+static volatile bool s_audio_streaming = false;
 
 bool http_stream_is_active(void)
 {
     return s_client_streaming;
+}
+
+bool http_stream_audio_is_active(void)
+{
+    return s_audio_streaming;
 }
 
 static esp_err_t stream_handler(httpd_req_t *req)
@@ -89,13 +97,147 @@ static esp_err_t stream_handler(httpd_req_t *req)
             ESP_LOGI(TAG, "Streamed %d frames smoothly", frame_count);
         }
 
-        // Minimal yield to keep socket and FreeRTOS tasks responsive
-        vTaskDelay(pdMS_TO_TICKS(10));
+        // Steady frame pacing (~20-25 FPS) so lwIP Wi-Fi buffers and TCP bandwidth stay clean and unchoked
+        vTaskDelay(pdMS_TO_TICKS(25));
     }
 
     s_client_streaming = false;
     ESP_LOGI(TAG, "Stream handler closed. Total frames: %d", frame_count);
     return res;
+}
+
+#define AUDIO_STREAM_CHUNK_SAMPLES 512
+
+static esp_err_t audio_stream_handler(httpd_req_t *req)
+{
+    if (s_audio_streaming) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "503: Audio stream already in use by another client", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    i2s_mic_init();
+
+    bool paused_ww = false;
+    if (wake_word_service_is_running()) {
+        wake_word_service_pause();
+        paused_ww = true;
+    }
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+    httpd_resp_set_hdr(req, "Connection", "keep-alive");
+    httpd_resp_set_hdr(req, "X-Audio-Sample-Rate", "16000");
+
+    ESP_LOGI(TAG, "Live mic audio stream started (INMP441 16kHz mono raw PCM)");
+    s_audio_streaming = true;
+
+    int16_t *chunk_buf = malloc(AUDIO_STREAM_CHUNK_SAMPLES * sizeof(int16_t));
+    if (!chunk_buf) {
+        ESP_LOGE(TAG, "Failed to allocate audio chunk buffer");
+        if (paused_ww) wake_word_service_resume();
+        s_audio_streaming = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t res = ESP_OK;
+    while (s_audio_streaming) {
+        size_t samples_read = 0;
+        esp_err_t rerr = i2s_mic_read(chunk_buf, AUDIO_STREAM_CHUNK_SAMPLES, &samples_read, 100);
+        if (rerr != ESP_OK || samples_read == 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        res = httpd_resp_send_chunk(req, (const char *)chunk_buf, samples_read * sizeof(int16_t));
+        if (res != ESP_OK) {
+            ESP_LOGW(TAG, "Audio client stream ended (code: %d)", res);
+            break;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    free(chunk_buf);
+    httpd_resp_send_chunk(req, NULL, 0);
+    s_audio_streaming = false;
+
+    if (paused_ww) {
+        wake_word_service_resume();
+    }
+
+    ESP_LOGI(TAG, "Live mic audio stream closed");
+    return res;
+}
+
+static void stream_async_task(void *arg)
+{
+    httpd_req_t *req = (httpd_req_t *)arg;
+    stream_handler(req);
+    httpd_req_async_handler_complete(req);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t stream_async_handler(httpd_req_t *req)
+{
+    if (s_client_streaming) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "503: Video stream already active", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    httpd_req_t *copy = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &copy);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start async video stream: %d", err);
+        return err;
+    }
+
+    BaseType_t ret = xTaskCreatePinnedToCore(stream_async_task, "stream_async", 4096, copy, 4, NULL, 0);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create stream_async task");
+        httpd_req_async_handler_complete(copy);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static void audio_async_task(void *arg)
+{
+    httpd_req_t *req = (httpd_req_t *)arg;
+    audio_stream_handler(req);
+    httpd_req_async_handler_complete(req);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t audio_async_handler(httpd_req_t *req)
+{
+    if (s_audio_streaming) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "503: Audio stream already active", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    httpd_req_t *copy = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &copy);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start async audio stream: %d", err);
+        return err;
+    }
+
+    BaseType_t ret = xTaskCreatePinnedToCore(audio_async_task, "audio_async", 4096, copy, 4, NULL, 0);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create audio_async task");
+        httpd_req_async_handler_complete(copy);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 // Control endpoint to start/stop streaming
@@ -837,8 +979,56 @@ static esp_err_t index_handler(httpd_req_t *req)
         "            transition: all 0.2s ease;"
         "        }"
         "        button:hover { filter: brightness(1.1); transform: translateY(-1px); }"
-        "        .btn-stop { background: #ef4444; color: #450a0a; }"
+        "        .btn-stop { background: #ef4444; color: #ffffff; }"
         "        .btn-cap { background: #38bdf8; color: #082f49; }"
+        "        .btn-listen { background: #10b981; color: #ffffff; }\n"
+        "        .btn-listen.listening { background: #f43f5e; color: #ffffff; }\n"
+        "        .audio-listen-bar {\n"
+        "            display: none;\n"
+        "            width: 100%;\n"
+        "            background: #0f172a;\n"
+        "            padding: 10px 14px;\n"
+        "            border-radius: 8px;\n"
+        "            border: 1px solid #334155;\n"
+        "            margin-top: 8px;\n"
+        "            align-items: center;\n"
+        "            justify-content: space-between;\n"
+        "            gap: 10px;\n"
+        "            flex-wrap: wrap;\n"
+        "        }\n"
+        "        .audio-listen-meta {\n"
+        "            display: flex;\n"
+        "            align-items: center;\n"
+        "            gap: 8px;\n"
+        "            font-size: 13px;\n"
+        "            color: #e2e8f0;\n"
+        "        }\n"
+        "        .vu-bar-wrap {\n"
+        "            flex: 1;\n"
+        "            min-width: 90px;\n"
+        "            height: 10px;\n"
+        "            background: #1e293b;\n"
+        "            border-radius: 5px;\n"
+        "            overflow: hidden;\n"
+        "            border: 1px solid #475569;\n"
+        "        }\n"
+        "        .vu-bar-fill {\n"
+        "            height: 100%;\n"
+        "            width: 0%;\n"
+        "            background: linear-gradient(90deg, #10b981 60%, #eab308 85%, #ef4444 100%);\n"
+        "            transition: width 0.05s ease;\n"
+        "        }\n"
+        "        .vol-ctrl {\n"
+        "            display: flex;\n"
+        "            align-items: center;\n"
+        "            gap: 6px;\n"
+        "            font-size: 12px;\n"
+        "            color: #94a3b8;\n"
+        "        }\n"
+        "        .vol-slider {\n"
+        "            width: 75px;\n"
+        "            cursor: pointer;\n"
+        "        }\n"
         "        /* Voice Section */\n"
         "        .voice-body {\n"
         "            padding: 18px 20px;\n"
@@ -1026,8 +1216,25 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                <img id='stream-img' alt='PetBot Video Stream'>\n"
         "            </div>\n"
         "            <div class='stream-actions' id='stream-controls' style='display: none;'>\n"
-        "                <button id='btn-stop' class='btn-stop' onclick='window.stopLiveStream()'>⏹ Stop Stream</button>\n"
-        "                <button id='btn-cap' class='btn-cap' onclick='window.captureSnapshot()'>📸 Capture Snapshot</button>\n"
+        "                <div style='display: flex; gap: 10px; justify-content: center; width: 100%; flex-wrap: wrap;'>\n"
+        "                    <button id='btn-stop' class='btn-stop' onclick='window.stopLiveStream()'>⏹ Stop Stream</button>\n"
+        "                    <button id='btn-cap' class='btn-cap' onclick='window.captureSnapshot()'>📸 Snapshot</button>\n"
+        "                    <button id='btn-listen' class='btn-listen' onclick='window.toggleAudioListening()'>🔊 Listen Mic</button>\n"
+        "                </div>\n"
+        "                <div id='audio-listen-bar' class='audio-listen-bar'>\n"
+        "                    <div class='audio-listen-meta'>\n"
+        "                        <span>🟢</span>\n"
+        "                        <span><b>PetBot Mic:</b> 16kHz Live</span>\n"
+        "                    </div>\n"
+        "                    <div class='vu-bar-wrap' title='INMP441 Real-time Mic Audio Level'>\n"
+        "                        <div id='vu-fill' class='vu-bar-fill'></div>\n"
+        "                    </div>\n"
+        "                    <div class='vol-ctrl'>\n"
+        "                        <span>🔈</span>\n"
+        "                        <input type='range' class='vol-slider' id='audio-volume' min='0' max='200' value='100' oninput='window.setAudioVolume(this.value)'>\n"
+        "                        <span id='audio-vol-text'>100%</span>\n"
+        "                    </div>\n"
+        "                </div>\n"
         "            </div>\n"
         "        </div>\n"
         "        \n"
@@ -1193,6 +1400,8 @@ static esp_err_t index_handler(httpd_req_t *req)
         "        \n"
         "        window.stopLiveStream = function() {\n"
         "            console.log('PetBot: Stopping stream...');\n"
+        "            if (window.stopAudioListening) window.stopAudioListening();\n"
+        "            streamImg.onerror = null;\n"
         "            streamImg.src = '';\n"
         "            streamImg.style.display = 'none';\n"
         "            standbyBox.style.display = 'flex';\n"
@@ -1200,6 +1409,165 @@ static esp_err_t index_handler(httpd_req_t *req)
         "            streamBadge.className = 'badge badge-off';\n"
         "            streamBadge.innerHTML = 'Standby ⚪';\n"
         "            isStreaming = false;\n"
+        "        };\n"
+        "        \n"
+        "        var audioCtx = null;\n"
+        "        var audioGain = null;\n"
+        "        var audioReader = null;\n"
+        "        var isAudioListening = false;\n"
+        "        var pcmRemainder = null;\n"
+        "        var nextPlayTime = 0;\n"
+        "        \n"
+        "        window.toggleAudioListening = function() {\n"
+        "            if (isAudioListening) {\n"
+        "                window.stopAudioListening();\n"
+        "            } else {\n"
+        "                window.startAudioListening();\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.setAudioVolume = function(val) {\n"
+        "            var v = parseInt(val, 10);\n"
+        "            var textEl = document.getElementById('audio-vol-text');\n"
+        "            if (textEl) textEl.innerText = v + '%';\n"
+        "            if (audioGain && audioCtx) {\n"
+        "                audioGain.gain.setValueAtTime(v / 100.0, audioCtx.currentTime);\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.startAudioListening = async function() {\n"
+        "            if (isAudioListening) return;\n"
+        "            var btnListen = document.getElementById('btn-listen');\n"
+        "            var audioBar = document.getElementById('audio-listen-bar');\n"
+        "            try {\n"
+        "                var AudioContextClass = window.AudioContext || window.webkitAudioContext;\n"
+        "                if (!audioCtx || audioCtx.state === 'closed') {\n"
+        "                    audioCtx = new AudioContextClass();\n"
+        "                }\n"
+        "                if (audioCtx.state === 'suspended') {\n"
+        "                    await audioCtx.resume();\n"
+        "                }\n"
+        "                \n"
+        "                if (btnListen) {\n"
+        "                    btnListen.innerHTML = '⏳ Connecting...';\n"
+        "                    btnListen.disabled = true;\n"
+        "                }\n"
+        "                \n"
+        "                var resp = await fetch('/audio_stream?' + Date.now());\n"
+        "                if (!resp.ok) {\n"
+        "                    throw new Error('Server returned HTTP ' + resp.status);\n"
+        "                }\n"
+        "                \n"
+        "                pcmRemainder = null;\n"
+        "                nextPlayTime = 0;\n"
+        "                isAudioListening = true;\n"
+        "                audioReader = resp.body.getReader();\n"
+        "                \n"
+        "                if (!audioGain) {\n"
+        "                    audioGain = audioCtx.createGain();\n"
+        "                    var volSlider = document.getElementById('audio-volume');\n"
+        "                    var initVol = volSlider ? parseInt(volSlider.value, 10) / 100.0 : 1.0;\n"
+        "                    audioGain.gain.setValueAtTime(initVol, audioCtx.currentTime);\n"
+        "                    audioGain.connect(audioCtx.destination);\n"
+        "                }\n"
+        "                \n"
+        "                if (btnListen) {\n"
+        "                    btnListen.disabled = false;\n"
+        "                    btnListen.className = 'btn-listen listening';\n"
+        "                    btnListen.innerHTML = '🔇 Mute Mic';\n"
+        "                }\n"
+        "                if (audioBar) audioBar.style.display = 'flex';\n"
+        "                \n"
+        "                window.runAudioReader();\n"
+        "            } catch(e) {\n"
+        "                console.error('Audio listen error:', e);\n"
+        "                window.stopAudioListening();\n"
+        "                alert('Could not start live mic audio: ' + e.message);\n"
+        "            }\n"
+        "        };\n"
+        "        \n"
+        "        window.runAudioReader = async function() {\n"
+        "            var vuFill = document.getElementById('vu-fill');\n"
+        "            while (isAudioListening && audioReader) {\n"
+        "                try {\n"
+        "                    var chunk = await audioReader.read();\n"
+        "                    if (chunk.done) break;\n"
+        "                    var u8 = chunk.value;\n"
+        "                    if (!u8 || u8.byteLength === 0) continue;\n"
+        "                    \n"
+        "                    var combined;\n"
+        "                    if (pcmRemainder && pcmRemainder.byteLength > 0) {\n"
+        "                        combined = new Uint8Array(pcmRemainder.byteLength + u8.byteLength);\n"
+        "                        combined.set(pcmRemainder, 0);\n"
+        "                        combined.set(u8, pcmRemainder.byteLength);\n"
+        "                        pcmRemainder = null;\n"
+        "                    } else {\n"
+        "                        combined = u8;\n"
+        "                    }\n"
+        "                    \n"
+        "                    var usableBytes = combined.byteLength - (combined.byteLength % 2);\n"
+        "                    if (usableBytes < combined.byteLength) {\n"
+        "                        pcmRemainder = combined.slice(usableBytes);\n"
+        "                    }\n"
+        "                    if (usableBytes === 0) continue;\n"
+        "                    \n"
+        "                    var numSamples = usableBytes / 2;\n"
+        "                    var float32 = new Float32Array(numSamples);\n"
+        "                    var view = new DataView(combined.buffer, combined.byteOffset, usableBytes);\n"
+        "                    var sumSq = 0;\n"
+        "                    for (var s = 0; s < numSamples; s++) {\n"
+        "                        var v = view.getInt16(s * 2, true) / 32768.0;\n"
+        "                        float32[s] = v;\n"
+        "                        sumSq += v * v;\n"
+        "                    }\n"
+        "                    \n"
+        "                    if (vuFill && numSamples > 0) {\n"
+        "                        var rms = Math.sqrt(sumSq / numSamples);\n"
+        "                        var pct = Math.min(100, Math.round(rms * 400));\n"
+        "                        vuFill.style.width = pct + '%';\n"
+        "                    }\n"
+        "                    \n"
+        "                    if (audioCtx && isAudioListening) {\n"
+        "                        var audioBuffer = audioCtx.createBuffer(1, numSamples, 16000);\n"
+        "                        audioBuffer.copyToChannel(float32, 0);\n"
+        "                        \n"
+        "                        var source = audioCtx.createBufferSource();\n"
+        "                        source.buffer = audioBuffer;\n"
+        "                        source.connect(audioGain);\n"
+        "                        \n"
+        "                        var curTime = audioCtx.currentTime;\n"
+        "                        if (nextPlayTime < curTime) {\n"
+        "                            nextPlayTime = curTime + 0.05;\n"
+        "                        }\n"
+        "                        source.start(nextPlayTime);\n"
+        "                        nextPlayTime += audioBuffer.duration;\n"
+        "                    }\n"
+        "                } catch(err) {\n"
+        "                    console.warn('Audio reader stream ended:', err);\n"
+        "                    break;\n"
+        "                }\n"
+        "            }\n"
+        "            window.stopAudioListening();\n"
+        "        };\n"
+        "        \n"
+        "        window.stopAudioListening = function() {\n"
+        "            isAudioListening = false;\n"
+        "            if (audioReader) {\n"
+        "                try { audioReader.cancel(); } catch(e) {}\n"
+        "                audioReader = null;\n"
+        "            }\n"
+        "            pcmRemainder = null;\n"
+        "            nextPlayTime = 0;\n"
+        "            var btnListen = document.getElementById('btn-listen');\n"
+        "            if (btnListen) {\n"
+        "                btnListen.disabled = false;\n"
+        "                btnListen.className = 'btn-listen';\n"
+        "                btnListen.innerHTML = '🔊 Listen Mic';\n"
+        "            }\n"
+        "            var audioBar = document.getElementById('audio-listen-bar');\n"
+        "            if (audioBar) audioBar.style.display = 'none';\n"
+        "            var vuFill = document.getElementById('vu-fill');\n"
+        "            if (vuFill) vuFill.style.width = '0%';\n"
         "        };\n"
         "        \n"
         "        window.captureSnapshot = function() {\n"
@@ -1302,6 +1670,7 @@ static esp_err_t index_handler(httpd_req_t *req)
         "                window._pttSource = source;\n"
         "                window._pttProc = proc;\n"
         "                isPTT = true;\n"
+        "                if (audioGain && audioCtx) audioGain.gain.setValueAtTime(0, audioCtx.currentTime);\n"
         "                var pttBtn = document.getElementById('btn-ptt');\n"
         "                if (pttBtn) { pttBtn.className = 'btn-ptt active'; pttBtn.innerText = '🔴 Transmitting Live...'; }\n"
         "                var badge = document.getElementById('tts-badge');\n"
@@ -1316,6 +1685,11 @@ static esp_err_t index_handler(httpd_req_t *req)
         "            if (e) e.preventDefault();\n"
         "            if (!isPTT) return;\n"
         "            isPTT = false;\n"
+        "            if (audioGain && audioCtx) {\n"
+        "                var volSlider = document.getElementById('audio-volume');\n"
+        "                var v = volSlider ? parseInt(volSlider.value, 10) / 100.0 : 1.0;\n"
+        "                audioGain.gain.setValueAtTime(v, audioCtx.currentTime);\n"
+        "            }\n"
         "            var pttBtn = document.getElementById('btn-ptt');\n"
         "            if (pttBtn) { pttBtn.className = 'btn-ptt'; pttBtn.innerText = '🎙️ Hold to Speak'; }\n"
         "            var badge = document.getElementById('tts-badge');\n"
@@ -1614,13 +1988,19 @@ static esp_err_t index_handler(httpd_req_t *req)
     return httpd_resp_send(req, html, strlen(html));
 }
 
+static esp_err_t favicon_handler(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 void start_camera_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.stack_size = 10240;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
     config.send_wait_timeout = 10;
     config.recv_wait_timeout = 10;
@@ -1636,13 +2016,29 @@ void start_camera_server(void)
         };
         httpd_register_uri_handler(server, &index_uri);
 
+        httpd_uri_t favicon_uri = {
+            .uri = "/favicon.ico",
+            .method = HTTP_GET,
+            .handler = favicon_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &favicon_uri);
+
         httpd_uri_t stream_uri = {
             .uri = "/stream",
             .method = HTTP_GET,
-            .handler = stream_handler,
+            .handler = stream_async_handler,
             .user_ctx = NULL
         };
         httpd_register_uri_handler(server, &stream_uri);
+
+        httpd_uri_t audio_stream_uri = {
+            .uri = "/audio_stream",
+            .method = HTTP_GET,
+            .handler = audio_async_handler,
+            .user_ctx = NULL
+        };
+        httpd_register_uri_handler(server, &audio_stream_uri);
 
         httpd_uri_t control_uri = {
             .uri = "/control",

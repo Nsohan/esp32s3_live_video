@@ -120,6 +120,7 @@ static char *s_wake_word_name = NULL;
 static TaskHandle_t s_task_handle = NULL;
 static volatile bool s_task_running = false;
 static volatile bool s_paused = false;
+static volatile bool s_in_mic_read = false;
 static wake_word_callback_t s_callback = NULL;
 
 static void wake_word_task(void *arg);
@@ -225,6 +226,9 @@ void wake_word_service_pause(void)
 {
     if (!s_task_running) return;
     s_paused = true;
+    for (int i = 0; i < 25 && s_in_mic_read; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
     ESP_LOGI(TAG, "Wake word listening paused");
 }
 
@@ -274,7 +278,9 @@ static void wake_word_task(void *arg)
         }
 
         size_t samples_read = 0;
+        s_in_mic_read = true;
         esp_err_t err = i2s_mic_read(mic_buf, chunksize, &samples_read, 200);
+        s_in_mic_read = false;
 
         if (err != ESP_OK || samples_read < (size_t)chunksize) {
             vTaskDelay(pdMS_TO_TICKS(10));

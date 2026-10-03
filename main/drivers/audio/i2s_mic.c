@@ -9,14 +9,20 @@
 static const char *TAG = "i2s_mic";
 
 // INMP441 gives 24-bit data left-justified in a 32-bit slot.
-// >>16 = exact 16-bit; >>14 = 4x digital gain (clamped) so quiet voices are visible.
-#define MIC_SHIFT 14
+// >>16 = exact 16-bit PCM; >>15 = 2x digital gain for clear, balanced voice without clipping.
+#define MIC_SHIFT 15
 
 static i2s_chan_handle_t s_rx_chan = NULL;
 
 esp_err_t i2s_mic_init(void)
 {
-    if (s_rx_chan) return ESP_OK;
+    if (s_rx_chan) {
+        i2s_chan_info_t chan_info;
+        if (i2s_channel_get_info(s_rx_chan, &chan_info) == ESP_OK && !chan_info.is_enabled) {
+            i2s_channel_enable(s_rx_chan);
+        }
+        return ESP_OK;
+    }
 
     ESP_LOGI(TAG, "Init INMP441: SCK=%d WS=%d SD=%d @ %d Hz",
              I2S_MIC_PIN_SCK, I2S_MIC_PIN_WS, I2S_MIC_PIN_SD, I2S_MIC_SAMPLE_RATE);
@@ -60,6 +66,8 @@ esp_err_t i2s_mic_init(void)
     ret = i2s_channel_enable(s_rx_chan);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "channel_enable failed: %s", esp_err_to_name(ret));
+        i2s_del_channel(s_rx_chan);
+        s_rx_chan = NULL;
         return ret;
     }
 
@@ -72,19 +80,28 @@ static float s_dc_filter_out_prev = 0.0f;
 
 esp_err_t i2s_mic_read(int16_t *dst, size_t samples, size_t *samples_read, uint32_t timeout_ms)
 {
-    if (!s_rx_chan) return ESP_ERR_INVALID_STATE;
+    if (!s_rx_chan) {
+        esp_err_t init_err = i2s_mic_init();
+        if (init_err != ESP_OK) return init_err;
+    }
+
+    // Ensure RX channel is active before reading
+    i2s_chan_info_t chan_info;
+    if (i2s_channel_get_info(s_rx_chan, &chan_info) == ESP_OK && !chan_info.is_enabled) {
+        i2s_channel_enable(s_rx_chan);
+    }
 
     int32_t raw[256];
     size_t done = 0;
-    TickType_t ticks = (timeout_ms == portMAX_DELAY) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
 
     while (done < samples) {
         size_t want = samples - done;
         if (want > 256) want = 256;
 
         size_t bytes = 0;
+        // NOTE: i2s_channel_read internally converts timeout_ms with pdMS_TO_TICKS, so pass timeout_ms directly!
         esp_err_t ret = i2s_channel_read(s_rx_chan, raw, want * sizeof(int32_t),
-                                         &bytes, ticks);
+                                         &bytes, timeout_ms);
         size_t got = bytes / sizeof(int32_t);
         for (size_t i = 0; i < got; i++) {
             float sample_in = (float)(raw[i] >> MIC_SHIFT);
